@@ -1,0 +1,22 @@
+trigger:
+- main  # Branche principale à surveiller pour les modifications
+
+pool:
+  vmImage: 'ubuntu-latest'  # Utiliser une image Ubuntu
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.x'  # Spécifiez la version de Python
+    addToPath: true
+
+- script: |
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt  # Installer les dépendances
+  displayName: 'Install dependencies'
+
+- script: |
+    python -m unittest discover  # Exécuter les tests unitaires
+  displayName: 'Run tests'
+
+# Ajoutez des étapes supplémentaires selon les besoins, par exemple pour le déploiement
