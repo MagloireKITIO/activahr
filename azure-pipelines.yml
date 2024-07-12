@@ -1,23 +1,12 @@
 trigger:
-- main
+- main  # Branche à suivre sur GitHub
 
 pool:
   vmImage: 'ubuntu-latest'
 
 steps:
 - checkout: self
-  fetchDepth: 1
-
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '3.x'
-    addToPath: true
-
 - script: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-  displayName: 'Install dependencies'
-
-- script: |
-    python -m unittest discover
-  displayName: 'Run tests'
+    git remote add azure https://techempower@dev.azure.com/techempower/Activa_recrutement/_git/Activa_recrutement
+    git push azure main
+  displayName: 'Push changes to Azure DevOps'
