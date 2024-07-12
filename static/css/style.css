@@ -435,7 +435,7 @@ form label {
 .required-star::after {
     content: "*";
     padding-left: 5px;
-    color: red;
+    color: #000000;
 }
 
 .oh-badge--small {
@@ -507,4 +507,8 @@ form label {
     left: 0;
     backdrop-filter: blur(8px);
     z-index: 9 !important;
+}
+
+.note-modal-backdrop {
+    display: none !important;
 }

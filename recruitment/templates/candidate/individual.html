@@ -70,11 +70,42 @@
 
 <div class="oh-wrapper" id="section">
   <div class="oh-card mt-4 mb-5">
-    <div class="d-flex flex-row-reverse">
+    <div class="d-flex flex-row-reverse align-items-center">
+
+      {% if next != None %}
+      <a
+        href="{% url 'candidate-view-individual' next %}" title='{% trans "Next Candidate" %}' style="color:hsl(8, 77%, 56%);" class="ms-1 me-3 fw-bold"
+        >
+        <ion-icon name="arrow-forward-circle-outline" style="font-size:35px;"></ion-icon>
+      </a>
+    {% else %}
+      <a
+        href="#" style="color:hsl(8 50% 83% / 1);" class="ms-1 me-3 fw-bold oh-btn--disabled"
+        >
+        <ion-icon name="arrow-forward-circle-outline" style="font-size:35px;"></ion-icon>
+      </a>
+    {% endif %}
+
+    {% if previous != None %}
+      <a
+        href="{% url 'candidate-view-individual' previous %}" title='{% trans "Previous Candidate" %}' style="color:hsl(8, 77%, 56%);" class="ms-1 me-2 fw-bold"
+        >
+        <ion-icon name="arrow-back-circle-outline" style="font-size:35px;"></ion-icon>
+      </a>
+    {% else %}
+      <a
+        href="#" style="color:hsl(8 50% 83% / 1);" class="ms-1 me-2 fw-bold oh-btn--disabled"
+        >
+        <ion-icon name="arrow-back-circle-outline" style="font-size:35px;"></ion-icon>
+      </a>
+    {% endif %}
+
+    <a href="{% url 'rec-candidate-update' candidate.id %}" class="mt-1 mb-1 m-3">
+      <img src="/static/images/ui/edit_btn.png" style="width: 25px; height: auto;" title="{% trans 'Edit' %}">
+    </a>
       {% if perms.recruitment.change_candidate %}
         <div class='d-flex float-end ms-4'>
-          {% if candidate.email in emp_list %}
-          {% else %}
+          {% if not candidate.email in emp_list and not candidate.start_onboard %}
             <form action="{% url 'candidate-conversion' candidate.id %}" style="color: inherit;text-decoration: none;"
               onsubmit="return confirm('{% trans "Are you sure you want to convert this candidate into an employee?" %}')"
               >
@@ -85,8 +116,6 @@
         </div>
       {% endif %}
 
-      <a href="{% url 'rec-candidate-update' candidate.id %}" class="mt-2">
-        <img src="/static/images/ui/edit_btn.png" style="width: 25px; height: auto;" title="{% trans 'Edit' %}">      </a>
     </div>
     <div class="row">
       <div class="col-12 col-sm-12 col-md-12 col-lg-4">
@@ -192,6 +221,8 @@
               class="oh-general__tab-link"
               data-action="general-tab"
               data-target="#note"
+              hx-get="{% url 'add-note' candidate.id %}"
+              hx-target="#note"
               >{% trans "Notes" %}</a
             >
           </li>
@@ -410,139 +441,8 @@
         <div
           class="oh-general__tab-target oh-profile__info-tab mb-4 d-none"
           id="note"
-        >
-          <!-- #2 -->
-          {% load i18n static %}
-          <style>
-              #enlargeDocContainer {
-                  position: absolute;
-                  left: 400px;
-                  top: 300px;
-                  height: 200px;
-                  width: 400px;
-              }
-          </style>
-
-          {% if candidate.stagenote_set.all %}
-            <form method="post"
-            hx-target="#note"
-            hx-post="{% url 'add-note' candidate.id %}" id="commentForm">
-            {% csrf_token %}
-
-            <div>
-                <div class="mt-4">
-                  <span class="oh-activity-sidebar__title fw-bold">{{candidate}}'s {% trans "Notes" %}</span>
-                  <input type="text" name="description" id="commentInput" class="oh-input w-100 mt-2" placeholder="Add notes">
-                </div>
-                  <button type="submit" id="commentButton" class="oh-btn oh-btn--secondary mt-2 mr-0 oh-btn--w-100-resp" style="display: none;">
-                    {% trans "Add" %}
-                  </button>
-                </div>
-
-                <div class="oh-inner-sidebar-content__footer"></div>
-              </form>
-
-            <ol class="oh-activity-sidebar__qa-list" role="list">
-              {% for note in candidate.stagenote_set.all %}
-                <li class="oh-activity-sidebar__qa-item">
-                  <span class="oh-activity-sidebar__q">{{ note.description }}
-                      <span class="float-end" title="Delete" hx-get="{% url 'note-delete-individual' note.id %}" data-target="#activitySidebar" hx-swap="innerHTML" hx-target="#note">
-                        <ion-icon name="close-outline" style="font-size: 24px" role="img" class="md hydrated" aria-label="close outline"></ion-icon></span>
-                  </span>
-
-                  <div class="d-flex mt-2 mb-2">
-                    {% for file in note.stage_files.all %}
-                    <a
-                      href="{{ file.files.url }}"
-                      rel="noopener noreferrer"
-                      target="_blank"
-                      ><span
-                        class="oh-file-icon oh-file-icon--pdf"
-                        onmouseover="enlargeImage('{{ file.files.url }}',$(this))
-                        								$('#showImageContainer').addClass('enlarge-image-container');"
-                        onmouseout = "hideEnlargeImage()
-                        								$('#showImageContainer').removeClass('enlarge-image-container');"
-                        style="width: 40px; height: 40px"
-                        ><img
-                          src="{% static 'images/ui/minus-icon.png' %}"
-                          style="display: block; width: 50%; height: 50%"
-                          hx-get='{% url "delete-individual-note-file" file.id %}'
-                          hx-target="#note"
-                          onclick="event.stopPropagation();event.preventDefault()" /></span
-                    ></a>
-                    {% endfor %}
-
-                    <form
-                      hx-post="{% url 'add-more-files-individual' note.id %}"
-                      class="add-files-form"
-                      hx-encoding="multipart/form-data"
-                      data-target="#activitySidebar" hx-swap="innerHTML" hx-target="#note"
-
-                    >
-                      {% csrf_token %}
-                      <label for="addFile_{{note.id}}" title="Add Files"
-                        ><ion-icon
-                          name="add-outline"
-                          style="font-size: 24px"
-                          role="img"
-                          class="md hydrated"
-                          aria-label="add outline"
-                        ></ion-icon
-                      ></label>
-                      <input
-                        type="file"
-                        name="files"
-                        class="d-none"
-                        multiple="true"
-                        id="addFile_{{note.id}}"
-                        onchange="submitForm(this)"
-                      />
-                      <input
-                        type="submit"
-                        class="d-none add_more_submit"
-                        value="save"
-                      />
-                    </form>
-                  </div>
-                  <span class="oh-activity-sidebar__a">
-                    {% trans 'by' %}
-                    <img
-                      src="{{ note.note_by.get_avatar }}"
-                      style="width: 1.5em; border-radius: 100%"
-                    />
-                    {{ note.updated_by }} @ {{note.stage_id }}
-                    {% trans "stage" %}
-                  </span>
-                  <div style="width: 50%">
-                    <div id="enlargeDocContainer" class="enlargeDocContainer"></div>
-                  </div>
-                </li>
-
-              {% endfor %}
-            </ol>
-          {% else %}
-            <form method="post"
-              hx-target="#note"
-              hx-post="{% url 'add-note' candidate.id %}" id="commentForm">
-              {% csrf_token %}
-
-                <div>
-                  <div class="mt-4">
-                    <span class="oh-activity-sidebar__title fw-bold">{{candidate}}'s {% trans "Notes" %}</span>
-                    <input type="text" name="description" id="commentInput" class="oh-input w-100 mt-2" placeholder="Add notes">
-                  </div>
-                  <button type="submit" id="commentButton" class="oh-btn oh-btn--secondary mt-2 mr-0 oh-btn--w-100-resp" style="display: none;">
-                    {% trans "Add" %}
-                  </button>
-                </div>
-
-                <div class="oh-inner-sidebar-content__footer"></div>
-              </form>
-              <div class='d-flex mt-5' style='margin-left:30%;'>
-                <img style="width: 80px;height: 90px;" src="{% static 'images/ui/no_notes.png' %}"/>
-                <h5 class="oh-404__subtitle mt-4 ml-2">{% trans "No notes have been added for this candidate" %}</h5>
-              </div>
-          {% endif %}
+          >
+          {% include "candidate/individual_view_note.html" %}
         </div>
 
         <div
@@ -589,6 +489,9 @@
                         &nbsp<i id="fabIcon" style="font-size:12px;" class="material-icons">radio_button_checked</i> {{ interviewer }}
                       {% endfor %}
                       <br>
+                      {% if interview_schedule.description %}
+                        <span class="d-flex ms-3 mb-2 mt-2">{% trans "Description" %} : <span class=" ms-2">{{ interview_schedule.description }}</span>
+                      {% endif %}
                   </span>
                   {% if interview_schedule.completed %}
                       <div class="d-flex" style="color:green;">
@@ -660,24 +563,6 @@
                 <div class="oh-modal__dialog-body" id="createTarget"></div>
             </div>
           </div>
-
-
-          <script>
-              // Get references to the input field and comment button
-              const commentInput = document.getElementById('commentInput');
-              const commentButton = document.getElementById('commentButton');
-
-              // Add event listener to the input field
-              commentInput.addEventListener('input', function() {
-                  // Show the comment button if the input field is not empty, hide it otherwise
-                  if (commentInput.value.trim() !== '') {
-                      commentButton.style.display = 'inline';
-                  } else {
-                      commentButton.style.display = 'none';
-                  }
-              });
-          </script>
-
         </div>
         <div
           class="oh-general__tab-target oh-profile__info-tab mb-4 d-none"

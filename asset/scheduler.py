@@ -7,6 +7,7 @@ This module is used to register scheduled tasks
 from datetime import date, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from django.urls import reverse
 
 from notifications.signals import notify
 
@@ -32,15 +33,16 @@ def notify_expiring_assets():
                     bot,
                     recipient=asset.owner.employee_user_id,
                     verb=f"The Asset ' {asset.asset_name} ' expires in {asset.notify_before} days",
-                    verb_ar=f"تنتهي صلاحية الأصل ' {asset.asset_name} ' خلال {asset.notify_before} من الأيام",
-                    verb_de=f"Das Asset „{asset.asset_name}“ läuft in {asset.notify_before} Tagen ab.",
-                    verb_es=f"El activo “{asset.asset_name}” caduca en {asset.notify_before} días.",
+                    verb_ar=f"تنتهي صلاحية الأصل ' {asset.asset_name} ' خلال {asset.notify_before}\
+                    من الأيام",
+                    verb_de=f"Das Asset {asset.asset_name} läuft in {asset.notify_before} Tagen\
+                        ab.",
+                    verb_es=f"El activo {asset.asset_name} caduca en {asset.notify_before} días.",
                     verb_fr=f"L'actif {asset.asset_name} expire dans {asset.notify_before} jours.",
-                    redirect=f"/asset/asset-category-view/",
+                    redirect=reverse("asset-category-view"),
                     label="System",
                     icon="information",
                 )
-    return
 
 
 def notify_expiring_documents():
@@ -63,21 +65,25 @@ def notify_expiring_documents():
                 notify.send(
                     bot,
                     recipient=document.employee_id.employee_user_id,
-                    verb=f"The document ' {document.title} ' expires in {document.notify_before} days",
-                    verb_ar=f"تنتهي صلاحية المستند '{document.title}' خلال {document.notify_before} يوم",
-                    verb_de=f"Das Dokument '{document.title}' läuft in {document.notify_before} Tagen ab.",
-                    verb_es=f"El documento '{document.title}' caduca en {document.notify_before} días",
-                    verb_fr=f"Le document '{document.title}' expire dans {document.notify_before} jours",
-                    redirect=f"/asset/asset-category-view/",
+                    verb=f"The document ' {document.title} ' expires in {document.notify_before}\
+                        days",
+                    verb_ar=f"تنتهي صلاحية المستند '{document.title}' خلال {document.notify_before}\
+                    يوم",
+                    verb_de=f"Das Dokument '{document.title}' läuft in {document.notify_before}\
+                        Tagen ab.",
+                    verb_es=f"El documento '{document.title}' caduca en {document.notify_before}\
+                        días",
+                    verb_fr=f"Le document '{document.title}' expire dans {document.notify_before}\
+                        jours",
+                    redirect=reverse("asset-category-view"),
                     label="System",
                     icon="information",
                 )
             if today >= expiry_date:
                 document.is_active = False
-    return
 
 
 scheduler = BackgroundScheduler()
-scheduler.add_job(notify_expiring_assets, "interval", days=1)
-scheduler.add_job(notify_expiring_documents, "interval", days=1)
+scheduler.add_job(notify_expiring_assets, "interval", hours=4)
+scheduler.add_job(notify_expiring_documents, "interval", hours=4)
 scheduler.start()

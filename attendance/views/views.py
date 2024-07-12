@@ -15,6 +15,7 @@ import calendar
 import contextlib
 import io
 import json
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs
 
@@ -24,6 +25,7 @@ from django.core.paginator import Paginator
 from django.db.models import ProtectedError
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.translation import gettext as __
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
@@ -72,7 +74,8 @@ from base.methods import (
     get_pagination,
 )
 from base.models import EmployeeShiftSchedule
-from employee.models import Employee
+from employee.filters import EmployeeFilter
+from employee.models import Employee, EmployeeWorkInformation
 from horilla.decorators import (
     hx_request_required,
     login_required,
@@ -210,6 +213,7 @@ def attendance_day_checking(attendance_date, minimum_hour):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("attendance.add_attendance")
 def attendance_create(request):
     """
@@ -422,6 +426,7 @@ def attendance_view(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("attendance.change_attendance")
 def attendance_update(request, obj_id):
     """
@@ -598,6 +603,7 @@ def view_my_attendance(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("attendance.add_attendanceovertime")
 def attendance_overtime_create(request):
     """
@@ -723,7 +729,11 @@ def attendance_overtime_delete(request, obj_id):
         if hx_target == "ot-table":
             messages.error(request, _("You cannot delete this hour account"))
     if hx_target and hx_target == "ot-table":
-        return redirect(f"/attendance/attendance-overtime-search?{previous_data}")
+        hour_account = AttendanceOverTime.objects.all()
+        if hour_account.exists():
+            return redirect(f"/attendance/attendance-overtime-search?{previous_data}")
+        else:
+            return HttpResponse("<script>window.location.reload()</script>")
     elif hx_target:
         return HttpResponse()
 
@@ -1218,7 +1228,7 @@ def validate_bulk_attendance(request):
                 verb_de=f"Ihre Anwesenheit für das Datum {attendance.attendance_date} wurde bestätigt",
                 verb_es=f"Se ha validado su asistencia para la fecha {attendance.attendance_date}",
                 verb_fr=f"Votre présence pour la date {attendance.attendance_date} est validée",
-                redirect=f"/attendance/view-my-attendance?id={attendance.id}",
+                redirect=reverse("view-my-attendance") + f"?id={attendance.id}",
                 icon="checkmark",
             )
         except (Attendance.DoesNotExist, OverflowError, ValueError):
@@ -1255,7 +1265,7 @@ def validate_this_attendance(request, obj_id):
             verb_de=f"Deine Anwesenheit für das Datum {attendance.attendance_date} ist bestätigt.",
             verb_es=f"Se valida tu asistencia para la fecha {attendance.attendance_date}.",
             verb_fr=f"Votre présence pour la date {attendance.attendance_date} est validée.",
-            redirect=f"/attendance/view-my-attendance?id={attendance.id}",
+            redirect=reverse("view-my-attendance") + f"?id={attendance.id}",
             icon="checkmark",
         )
     except (Attendance.DoesNotExist, ValueError):
@@ -1294,7 +1304,7 @@ def revalidate_this_attendance(request, obj_id):
                     para la asistencia del {attendance.attendance_date}",
                 verb_fr=f"{attendance.employee_id} a demandé une revalidation pour la \
                     présence du {attendance.attendance_date}",
-                redirect=f"/attendance/view-my-attendance?id={attendance.id}",
+                redirect=reverse("view-my-attendance") + f"?id={attendance.id}",
                 icon="refresh",
             )
         return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
@@ -1333,7 +1343,7 @@ def approve_overtime(request, obj_id):
                     {attendance.attendance_date}.",
                 verb_fr=f"Les heures supplémentaires pour la date\
                       {attendance.attendance_date} ont été approuvées.",
-                redirect=f"/attendance/attendance-overtime-view?id={attendance.id}",
+                redirect=reverse("attendance-overtime-view") + f"?id={attendance.id}",
                 icon="checkmark",
             )
     except (Attendance.DoesNotExist, OverflowError):
@@ -1368,7 +1378,7 @@ def approve_bulk_overtime(request):
                     {attendance.attendance_date}",
                 verb_fr=f"Heures supplémentaires approuvées pour la présence du \
                     {attendance.attendance_date}",
-                redirect=f"/attendance/attendance-overtime-view?id={attendance.id}",
+                redirect=reverse("attendance-overtime-view") + f"?id={attendance.id}",
                 icon="checkmark",
             )
         except (Attendance.DoesNotExist, OverflowError, ValueError):
@@ -1380,16 +1390,31 @@ def form_shift_dynamic_data(request):
     """
     This method is used to update the shift details to the form
     """
-    shift_id = request.POST["shift_id"]
+    work_type = None
+    if "employee_id" in request.POST and request.POST["employee_id"]:
+        shift_id = request.POST["shift_id"]
+    # Check if 'employee_id' is present in POST request and not empty
+    if "employee_id" in request.POST and request.POST["employee_id"]:
+        employee_id = request.POST["employee_id"]
+        try:
+            employee = Employee.objects.get(id=employee_id)
+            # Use getattr to get the work type
+            work_type = employee.get_work_type()
+            if work_type:
+                work_type = work_type.id
+        except Employee.DoesNotExist:
+            pass
     attendance_date_str = request.POST.get("attendance_date")
     today = datetime.now()
     attendance_date = date(day=today.day, month=today.month, year=today.year)
     if attendance_date_str is not None and attendance_date_str != "":
         attendance_date = datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
     day = attendance_date.strftime("%A").lower()
-    schedule_today = EmployeeShiftSchedule.objects.filter(
-        shift_id__id=shift_id, day__day=day
-    ).first()
+    schedule_today = None
+    if shift_id:
+        schedule_today = EmployeeShiftSchedule.objects.filter(
+            shift_id__id=shift_id, day__day=day
+        ).first()
     shift_start_time = ""
     shift_end_time = ""
     minimum_hour = "00:00"
@@ -1415,6 +1440,7 @@ def form_shift_dynamic_data(request):
             "minimum_hour": minimum_hour,
             "worked_hour": worked_hour,
             "checkout_date": attendance_clock_out_date.strftime("%Y-%m-%d"),
+            "work_type": str(work_type),
         }
     )
 
@@ -1654,6 +1680,7 @@ def latecome_attendance_select_filter(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("attendance.add_gracetime")
 def create_grace_time(request):
     """
@@ -1683,6 +1710,7 @@ def create_grace_time(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("attendance.change_gracetime")
 def update_grace_time(request, grace_id):
     """
@@ -1794,29 +1822,65 @@ def create_attendancerequest_comment(request, attendance_id):
                 initial={"employee_id": emp.id, "request_id": attendance_id}
             )
             messages.success(request, _("Comment added successfully!"))
-            if (
-                attendance.employee_id.employee_work_info.reporting_manager_id
-                is not None
-            ):
-                if request.user.employee_get.id == attendance.employee_id.id:
-                    rec = (
-                        attendance.employee_id.employee_work_info.reporting_manager_id.employee_user_id
-                    )
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=rec,
-                        verb=f"{attendance.employee_id}'s attendance request has received a comment.",
-                        verb_ar=f"تلقت طلب الحضور {attendance.employee_id} تعليقًا.",
-                        verb_de=f"{attendance.employee_id}s Anfrage zur Anwesenheit hat einen Kommentar erhalten.",
-                        verb_es=f"La solicitud de asistencia de {attendance.employee_id} ha recibido un comentario.",
-                        verb_fr=f"La demande de présence de {attendance.employee_id} a reçu un commentaire.",
-                        redirect=f"/attendance/request-attendance-view?id={attendance.id}",
-                        icon="chatbox-ellipses",
-                    )
-                elif (
-                    request.user.employee_get.id
-                    == attendance.employee_id.employee_work_info.reporting_manager_id.id
+            work_info = EmployeeWorkInformation.objects.filter(
+                employee_id=attendance.employee_id
+            )
+            if work_info.exists():
+                if (
+                    attendance.employee_id.employee_work_info.reporting_manager_id
+                    is not None
                 ):
+                    if request.user.employee_get.id == attendance.employee_id.id:
+                        rec = (
+                            attendance.employee_id.employee_work_info.reporting_manager_id.employee_user_id
+                        )
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb=f"{attendance.employee_id}'s attendance request has received a comment.",
+                            verb_ar=f"تلقت طلب الحضور {attendance.employee_id} تعليقًا.",
+                            verb_de=f"{attendance.employee_id}s Anfrage zur Anwesenheit hat einen Kommentar erhalten.",
+                            verb_es=f"La solicitud de asistencia de {attendance.employee_id} ha recibido un comentario.",
+                            verb_fr=f"La demande de présence de {attendance.employee_id} a reçu un commentaire.",
+                            redirect=reverse("request-attendance-view")
+                            + f"?id={attendance.id}",
+                            icon="chatbox-ellipses",
+                        )
+                    elif (
+                        request.user.employee_get.id
+                        == attendance.employee_id.employee_work_info.reporting_manager_id.id
+                    ):
+                        rec = attendance.employee_id.employee_user_id
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb="Your attendance request has received a comment.",
+                            verb_ar="تلقى طلب الحضور الخاص بك تعليقًا.",
+                            verb_de="Ihr Antrag auf Anwesenheit hat einen Kommentar erhalten.",
+                            verb_es="Tu solicitud de asistencia ha recibido un comentario.",
+                            verb_fr="Votre demande de présence a reçu un commentaire.",
+                            redirect=reverse("request-attendance-view")
+                            + f"?id={attendance.id}",
+                            icon="chatbox-ellipses",
+                        )
+                    else:
+                        rec = [
+                            attendance.employee_id.employee_user_id,
+                            attendance.employee_id.employee_work_info.reporting_manager_id.employee_user_id,
+                        ]
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb=f"{attendance.employee_id}'s attendance request has received a comment.",
+                            verb_ar=f"تلقت طلب الحضور {attendance.employee_id} تعليقًا.",
+                            verb_de=f"{attendance.employee_id}s Anfrage zur Anwesenheit hat einen Kommentar erhalten.",
+                            verb_es=f"La solicitud de asistencia de {attendance.employee_id} ha recibido un comentario.",
+                            verb_fr=f"La demande de présence de {attendance.employee_id} a reçu un commentaire.",
+                            redirect=reverse("request-attendance-view")
+                            + f"?id={attendance.id}",
+                            icon="chatbox-ellipses",
+                        )
+                else:
                     rec = attendance.employee_id.employee_user_id
                     notify.send(
                         request.user.employee_get,
@@ -1826,38 +1890,10 @@ def create_attendancerequest_comment(request, attendance_id):
                         verb_de="Ihr Antrag auf Anwesenheit hat einen Kommentar erhalten.",
                         verb_es="Tu solicitud de asistencia ha recibido un comentario.",
                         verb_fr="Votre demande de présence a reçu un commentaire.",
-                        redirect=f"/attendance/request-attendance-view?id={attendance.id}",
+                        redirect=reverse("request-attendance-view")
+                        + f"?id={attendance.id}",
                         icon="chatbox-ellipses",
                     )
-                else:
-                    rec = [
-                        attendance.employee_id.employee_user_id,
-                        attendance.employee_id.employee_work_info.reporting_manager_id.employee_user_id,
-                    ]
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=rec,
-                        verb=f"{attendance.employee_id}'s attendance request has received a comment.",
-                        verb_ar=f"تلقت طلب الحضور {attendance.employee_id} تعليقًا.",
-                        verb_de=f"{attendance.employee_id}s Anfrage zur Anwesenheit hat einen Kommentar erhalten.",
-                        verb_es=f"La solicitud de asistencia de {attendance.employee_id} ha recibido un comentario.",
-                        verb_fr=f"La demande de présence de {attendance.employee_id} a reçu un commentaire.",
-                        redirect=f"/attendance/request-attendance-view?id={attendance.id}",
-                        icon="chatbox-ellipses",
-                    )
-            else:
-                rec = attendance.employee_id.employee_user_id
-                notify.send(
-                    request.user.employee_get,
-                    recipient=rec,
-                    verb="Your attendance request has received a comment.",
-                    verb_ar="تلقى طلب الحضور الخاص بك تعليقًا.",
-                    verb_de="Ihr Antrag auf Anwesenheit hat einen Kommentar erhalten.",
-                    verb_es="Tu solicitud de asistencia ha recibido un comentario.",
-                    verb_fr="Votre demande de présence a reçu un commentaire.",
-                    redirect=f"/attendance/request-attendance-view?id={attendance.id}",
-                    icon="chatbox-ellipses",
-                )
             return render(
                 request,
                 "requests/attendance/attendance_comment.html",
@@ -1984,46 +2020,11 @@ def monthly_leave_days(month, year):
 
 @login_required
 def work_records(request):
-    employees = Employee.objects.filter(is_active=True)
-    data = []
     today = date.today()
-    month_matrix = calendar.monthcalendar(today.year, today.month)
     previous_data = request.GET.urlencode()
-
-    days = [day for week in month_matrix for day in week if day != 0]
-    current_month_date_list = [
-        datetime(today.year, today.month, day).date() for day in days
-    ]
-
-    for employee in employees:
-        work_record_list = []
-        work_records_dict = {
-            record.date: record
-            for record in WorkRecord.objects.filter(
-                employee_id=employee, date__in=current_month_date_list
-            )
-        }
-
-        for day in current_month_date_list:
-            work_record = work_records_dict.get(day, None)
-            work_record_list.append(work_record)
-        data.append(
-            {
-                "employee": employee,
-                "work_record": work_record_list,
-            }
-        )
-    leave_dates = monthly_leave_days(today.month, today.year)
-    page_number = request.GET.get("page")
-    paginator = Paginator(data, 20)
-    data = paginator.get_page(page_number)
 
     context = {
         "current_date": today,
-        "current_month_dates_list": current_month_date_list,
-        "leave_dates": leave_dates,
-        "shift_schedule": EmployeeShiftSchedule.objects.all(),
-        "data": data,
         "pd": previous_data,
     }
     return render(
@@ -2035,6 +2036,7 @@ def work_records(request):
 @hx_request_required
 def work_records_change_month(request):
     previous_data = request.GET.urlencode()
+    employee_filter_form = EmployeeFilter()
     if request.GET.get("month"):
         date_obj = request.GET.get("month")
         month = int(date_obj.split("-")[1])
@@ -2043,31 +2045,53 @@ def work_records_change_month(request):
         month = date.today().month
         year = date.today().year
 
-    employees = Employee.objects.filter(is_active=True)
+    schedules = list(EmployeeShiftSchedule.objects.all())
+    employees = list(Employee.objects.filter(is_active=True))
+    if request.method == "POST":
+        employee_filter_form = EmployeeFilter(request.POST)
+        employees = list(employee_filter_form.qs)
     data = []
     month_matrix = calendar.monthcalendar(year, month)
 
     days = [day for week in month_matrix for day in week if day != 0]
     current_month_date_list = [datetime(year, month, day).date() for day in days]
 
-    for employee in employees:
-        work_record_list = []
-        work_records_dict = {
-            record.date: record
-            for record in WorkRecord.objects.filter(
-                employee_id=employee, date__in=current_month_date_list
-            )
-        }
+    all_work_records = WorkRecord.objects.filter(
+        date__in=current_month_date_list
+    ).select_related("employee_id")
 
-        for day in current_month_date_list:
-            work_record = work_records_dict.get(day, None)
+    work_records_dict = defaultdict(lambda: defaultdict(lambda: None))
+    for record in all_work_records:
+        work_records_dict[record.employee_id.id][record.date] = record
+
+    schedules_dict = defaultdict(dict)
+    for schedule in schedules:
+        schedules_dict[schedule.shift_id][schedule.day.day.lower()] = schedule
+
+    for employee in employees:
+        shift = getattr(getattr(employee, "employee_work_info", None), "shift_id", None)
+        work_record_list = []
+
+        for current_date in current_month_date_list:
+            day = current_date.strftime("%A").lower()
+            schedule = schedules_dict.get(shift, {}).get(day, None)
+            work_record = work_records_dict[employee.id].get(current_date, None)
+
+            if not work_record:
+                work_record = (
+                    None
+                    if not schedule or schedule.minimum_working_hour == "00:00"
+                    else "EW"
+                )
             work_record_list.append(work_record)
+
         data.append(
             {
                 "employee": employee,
                 "work_record": work_record_list,
             }
         )
+
     leave_dates = monthly_leave_days(month, year)
     page_number = request.GET.get("page")
     paginator = Paginator(data, 20)
@@ -2079,6 +2103,7 @@ def work_records_change_month(request):
         "data": data,
         "pd": previous_data,
         "current_date": date.today(),
+        "f": employee_filter_form,
     }
     return render(
         request, "attendance/work_record/work_record_list.html", context=context
@@ -2199,6 +2224,7 @@ def work_record_export(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("attendance.add_attendancegeneralsetting")
 def enable_timerunner(request):
     """

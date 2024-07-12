@@ -20,6 +20,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.contrib.sites.shortcuts import get_current_site
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
+from django.core.validators import validate_ipv46_address
 from django.forms import DateInput, HiddenInput, TextInput
 from django.template import loader
 from django.template.loader import render_to_string
@@ -28,13 +29,13 @@ from django.utils.http import urlsafe_base64_encode
 from django.utils.translation import gettext as _
 from django.utils.translation import gettext_lazy as _trans
 
-from base import thread_local_middleware
 from base.methods import reload_queryset
 from base.models import (
     Announcement,
     AnnouncementComment,
     AnnouncementExpire,
     Attachment,
+    AttendanceAllowedIP,
     BaserequestFile,
     Company,
     Department,
@@ -59,10 +60,11 @@ from base.models import (
     WorkTypeRequest,
     WorkTypeRequestComment,
 )
-from base.thread_local_middleware import _thread_locals
 from employee.filters import EmployeeFilter
 from employee.forms import MultipleFileField
 from employee.models import Employee, EmployeeTag
+from horilla import horilla_middlewares
+from horilla.horilla_middlewares import _thread_locals
 from horilla_audit.models import AuditTag
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
@@ -178,7 +180,7 @@ class ModelForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         reload_queryset(self.fields)
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         for field_name, field in self.fields.items():
             widget = field.widget
             if isinstance(widget, (forms.DateInput)):
@@ -466,11 +468,53 @@ class JobPositionForm(ModelForm):
         fields = "__all__"
         exclude = ["is_active"]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.instance.pk:
+            self.fields["department_id"] = forms.ModelMultipleChoiceField(
+                queryset=self.fields["department_id"].queryset
+            )
+            attrs = self.fields["department_id"].widget.attrs
+            attrs["class"] = "oh-select oh-select2 w-100"
+            attrs["style"] = "height:45px;"
+
+    def save(self, commit, *args, **kwargs) -> Any:
+        if not self.instance.pk:
+            request = getattr(_thread_locals, "request")
+            department = Department.objects.filter(
+                id__in=self.data.getlist("department_id")
+            )
+            positions = []
+            for dep in department:
+                position = JobPosition()
+                position.department_id = dep
+                position.job_position = self.data["job_position"]
+                form_data = self.data["job_position"]
+                if JobPosition.objects.filter(
+                    department_id=dep, job_position=form_data
+                ).exists():
+                    messages.error(request, f"Job position already exists under {dep}")
+                else:
+                    position.save()
+                positions.append(position.pk)
+            return JobPosition.objects.filter(id__in=positions)
+        super().save(commit, *args, **kwargs)
+
 
 class JobRoleForm(ModelForm):
     """
     JobRole model's form
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.instance.pk:
+            self.fields["job_position_id"] = forms.ModelMultipleChoiceField(
+                queryset=self.fields["job_position_id"].queryset
+            )
+            attrs = self.fields["job_position_id"].widget.attrs
+            attrs["class"] = "oh-select oh-select2 w-100"
+            attrs["style"] = "height:45px;"
 
     class Meta:
         """
@@ -480,6 +524,25 @@ class JobRoleForm(ModelForm):
         model = JobRole
         fields = "__all__"
         exclude = ["is_active"]
+
+    def save(self, commit, *args, **kwargs) -> Any:
+        if not self.instance.pk:
+            request = getattr(_thread_locals, "request")
+            job_positions = JobPosition.objects.filter(
+                id__in=self.data.getlist("job_position_id")
+            )
+            roles = []
+            for position in job_positions:
+                role = JobRole()
+                role.job_position_id = position
+                role.job_role = self.data["job_role"]
+                try:
+                    role.save()
+                except:
+                    messages.info(request, f"Role already exists under {position}")
+                roles.append(role.pk)
+            return JobRole.objects.filter(id__in=roles)
+        super().save(commit, *args, **kwargs)
 
 
 class WorkTypeForm(ModelForm):
@@ -512,7 +575,95 @@ class RotatingWorkTypeForm(ModelForm):
         exclude = ["employee_id", "is_active"]
         widgets = {
             "start_date": DateInput(attrs={"type": "date"}),
+            "additional_data": forms.HiddenInput(),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        work_type_counts = 0
+
+        def create_work_type_field(work_type_key, required, initial=None):
+            self.fields[work_type_key] = forms.ModelChoiceField(
+                queryset=WorkType.objects.all(),
+                widget=forms.Select(
+                    attrs={
+                        "class": "oh-select oh-select-2 mb-3",
+                        "name": work_type_key,
+                        "id": f"id_{work_type_key}",
+                    }
+                ),
+                required=required,
+                empty_label=_("---Choose Work Type---"),
+                initial=initial,
+            )
+
+        for key in self.data.keys():
+            if key.startswith("work_type"):
+                work_type_counts += 1
+                create_work_type_field(key, work_type_counts <= 2)
+
+        additional_data = self.initial.get("additional_data")
+        additional_work_types = (
+            additional_data.get("additional_work_types") if additional_data else None
+        )
+        if additional_work_types:
+            work_type_counts = 3
+            for work_type_id in additional_work_types:
+                create_work_type_field(
+                    f"work_type{work_type_counts}",
+                    work_type_counts <= 2,
+                    initial=work_type_id,
+                )
+                work_type_counts += 1
+
+        self.work_type_counts = work_type_counts
+
+    def as_p(self, *args, **kwargs):
+        context = {"form": self}
+        return render_to_string(
+            "base/rotating_work_type/htmx/rotating_work_type_as_p.html", context
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        additional_work_types = []
+        model_fields = list(self.instance.__dict__.keys())
+
+        for key, value in self.data.items():
+            if (
+                f"{key}_id" not in model_fields
+                and key.startswith("work_type")
+                and value
+            ):
+                additional_work_types.append(value)
+
+        if additional_work_types:
+            if (
+                "additional_data" not in cleaned_data
+                or cleaned_data["additional_data"] is None
+            ):
+                cleaned_data["additional_data"] = {}
+            cleaned_data["additional_data"][
+                "additional_work_types"
+            ] = additional_work_types
+
+        return cleaned_data
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        if self.cleaned_data.get("additional_data"):
+            if instance.additional_data is None:
+                instance.additional_data = {}
+            instance.additional_data["additional_work_types"] = self.cleaned_data[
+                "additional_data"
+            ].get("additional_work_types")
+        else:
+            instance.additional_data = None
+
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
 
 
 class RotatingWorkTypeAssignForm(ModelForm):
@@ -550,6 +701,7 @@ class RotatingWorkTypeAssignForm(ModelForm):
             "current_work_type",
             "next_work_type",
             "is_active",
+            "additional_data",
         ]
         widgets = {
             "start_date": DateInput(attrs={"type": "date"}),
@@ -670,6 +822,7 @@ class RotatingWorkTypeAssignForm(ModelForm):
                 employee.employee_work_info.work_type_id
             )
             rotating_work_type_assign.next_work_type = rotating_work_type.work_type2
+            rotating_work_type_assign.additional_data["next_shift_index"] = 1
             based_on = self.cleaned_data["based_on"]
             start_date = self.cleaned_data["start_date"]
             if based_on == "weekly":
@@ -695,6 +848,10 @@ class RotatingWorkTypeAssignUpdateForm(forms.ModelForm):
     RotatingWorkTypeAssign model's form
     """
 
+    based_on = forms.ChoiceField(
+        choices=BASED_ON, initial="daily", label=_trans("Based on")
+    )
+
     class Meta:
         """
         Meta class for additional options
@@ -707,6 +864,7 @@ class RotatingWorkTypeAssignUpdateForm(forms.ModelForm):
             "current_work_type",
             "next_work_type",
             "is_active",
+            "additional_data",
         ]
         widgets = {
             "start_date": DateInput(attrs={"type": "date"}),
@@ -956,6 +1114,88 @@ class RotatingShiftForm(ModelForm):
         model = RotatingShift
         fields = "__all__"
         exclude = ["employee_id", "is_active"]
+        widgets = {"additional_data": forms.HiddenInput()}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        shift_counts = 0
+
+        def create_shift_field(shift_key, required, initial=None):
+            self.fields[shift_key] = forms.ModelChoiceField(
+                queryset=EmployeeShift.objects.all(),
+                widget=forms.Select(
+                    attrs={
+                        "class": "oh-select oh-select-2 mb-3",
+                        "name": shift_key,
+                        "id": f"id_{shift_key}",
+                    }
+                ),
+                required=required,
+                empty_label=_("---Choose Shift---"),
+                initial=initial,
+            )
+
+        for key in self.data.keys():
+            if key.startswith("shift") and self.data[key]:
+                shift_counts += 1
+                create_shift_field(key, shift_counts <= 2)
+
+        additional_data = self.initial.get("additional_data")
+        additional_shifts = (
+            additional_data.get("additional_shifts") if additional_data else None
+        )
+        if additional_shifts:
+            shift_counts = 3
+            for shift_id in additional_shifts:
+                if shift_id:
+                    create_shift_field(
+                        f"shift{shift_counts}", shift_counts <= 2, initial=shift_id
+                    )
+                    shift_counts += 1
+
+        self.shift_counts = shift_counts
+
+    def as_p(self, *args, **kwargs):
+        context = {"form": self}
+        return render_to_string(
+            "base/rotating_shift/htmx/rotating_shift_as_p.html", context
+        )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        additional_shifts = []
+        model_fields = list(self.instance.__dict__.keys())
+
+        for key, value in self.data.items():
+            if f"{key}_id" not in model_fields and key.startswith("shift") and value:
+                additional_shifts.append(value)
+
+        if additional_shifts:
+            if (
+                "additional_data" not in cleaned_data
+                or cleaned_data["additional_data"] is None
+            ):
+                cleaned_data["additional_data"] = {}
+            cleaned_data["additional_data"]["additional_shifts"] = additional_shifts
+
+        return cleaned_data
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        if self.cleaned_data.get("additional_data"):
+            if instance.additional_data is None:
+                instance.additional_data = {}
+            instance.additional_data["additional_shifts"] = self.cleaned_data[
+                "additional_data"
+            ].get("additional_shifts")
+        else:
+            instance.additional_data = None
+
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
 
 
 class RotatingShiftAssignForm(forms.ModelForm):
@@ -988,7 +1228,13 @@ class RotatingShiftAssignForm(forms.ModelForm):
 
         model = RotatingShiftAssign
         fields = "__all__"
-        exclude = ["next_change_date", "current_shift", "next_shift", "is_active"]
+        exclude = [
+            "next_change_date",
+            "current_shift",
+            "next_shift",
+            "is_active",
+            "additional_data",
+        ]
         widgets = {
             "start_date": DateInput(attrs={"type": "date"}),
         }
@@ -1107,7 +1353,8 @@ class RotatingShiftAssignForm(forms.ModelForm):
             ]
             rotating_shift_assign.next_change_date = self.cleaned_data["start_date"]
             rotating_shift_assign.current_shift = employee.employee_work_info.shift_id
-            rotating_shift_assign.next_shift = rotating_shift.shift2
+            rotating_shift_assign.next_shift = rotating_shift.shift1
+            rotating_shift_assign.additional_data["next_shift_index"] = 1
             based_on = self.cleaned_data["based_on"]
             start_date = self.cleaned_data["start_date"]
             if based_on == "weekly":
@@ -1132,6 +1379,10 @@ class RotatingShiftAssignUpdateForm(ModelForm):
     RotatingShiftAssign model's form
     """
 
+    based_on = forms.ChoiceField(
+        choices=BASED_ON, initial="daily", label=_trans("Based on")
+    )
+
     class Meta:
         """
         Meta class for additional options
@@ -1139,7 +1390,13 @@ class RotatingShiftAssignUpdateForm(ModelForm):
 
         model = RotatingShiftAssign
         fields = "__all__"
-        exclude = ["next_change_date", "current_shift", "next_shift", "is_active"]
+        exclude = [
+            "next_change_date",
+            "current_shift",
+            "next_shift",
+            "is_active",
+            "additional_data",
+        ]
         widgets = {
             "start_date": DateInput(attrs={"type": "date"}),
         }
@@ -1316,6 +1573,16 @@ class ShiftAllocationForm(ModelForm):
             "requested_date": _trans("Requested Date"),
             "requested_till": _trans("Requested Till"),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["shift_id"].widget.attrs.update(
+            {
+                "hx-target": "#id_reallocate_to_parent_div",
+                "hx-trigger": "change",
+                "hx-get": "/update-employee-allocation",
+            }
+        )
 
     def as_p(self):
         """
@@ -1605,6 +1872,14 @@ class TagsForm(ModelForm):
         widgets = {"color": TextInput(attrs={"type": "color", "style": "height:50px"})}
         exclude = ["objects", "is_active"]
 
+    def as_p(self, *args, **kwargs):
+        """
+        Render the form fields as HTML table rows with Bootstrap styling.
+        """
+        context = {"form": self}
+        table_html = render_to_string("attendance_form.html", context)
+        return table_html
+
 
 class EmployeeTagForm(ModelForm):
     """
@@ -1686,6 +1961,14 @@ class DynamicMailConfForm(ModelForm):
         return table_html
 
 
+class DynamicMailTestForm(forms.Form):
+    """
+    DynamicEmailTest
+    """
+
+    to_email = forms.EmailField(label="To email", required=True)
+
+
 class MultipleApproveConditionForm(ModelForm):
     CONDITION_CHOICE = [
         ("equal", _("Equal (==)")),
@@ -1708,7 +1991,9 @@ class MultipleApproveConditionForm(ModelForm):
         widget=forms.Select(
             attrs={
                 "class": "oh-select oh-select-2 mb-2",
-                "onChange": "toggleFields($('#id_condition_operator'))",
+                "hx-trigger": "change",
+                "hx-target": "#conditionValueDiv",
+                "hx-get": "condition-value-fields",
             },
         ),
     )
@@ -1939,3 +2224,69 @@ class PassWordResetForm(forms.Form):
                 email,
                 html_email_template_name=html_email_template_name,
             )
+
+
+class AttendanceAllowedIPForm(ModelForm):
+    ip_address = forms.CharField(max_length=30, label="IP Address")
+
+    class Meta:
+        model = AttendanceAllowedIP
+        fields = ["ip_address"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        ip_counts = 1
+
+        def create_ip_field(ip_key, initial=None):
+            self.fields[ip_key] = forms.ModelChoiceField(
+                widget=forms.TextInput(
+                    attrs={
+                        "class": "oh-input w-100 mb-3",
+                        "name": ip_key,
+                        "id": f"id_{ip_key}",
+                    }
+                ),
+                required=False,
+                initial=initial,
+            )
+
+        additional_data = self.initial.get("additional_data")
+        additional_ips = (
+            additional_data.get("additional_ips") if additional_data else None
+        )
+        if additional_ips:
+            ip_counts = 1
+            for ip_id in additional_ips:
+                if ip_id:
+                    create_ip_field(f"ip{ip_counts}", initial=ip_id)
+                    ip_counts += 1
+
+        self.ip_counts = ip_counts
+
+    def as_p(self, *args, **kwargs):
+        context = {"form": self}
+        return render_to_string("attendance/ip_restriction/restrict_form.html", context)
+
+
+class AttendanceAllowedIPUpdateForm(ModelForm):
+    ip_address = forms.CharField(max_length=30, label="IP Address")
+
+    class Meta:
+        model = AttendanceAllowedIP
+        fields = ["ip_address"]
+
+    def validate_ip_address(self, value):
+        try:
+            validate_ipv46_address(value)
+        except ValidationError:
+            raise ValidationError("Enter a valid IPv4 or IPv6 address.")
+        return value
+
+    def clean(self):
+        cleaned_data = super().clean()
+
+        for field_name, value in self.data.items():
+            cleaned_data[field_name] = self.validate_ip_address(value)
+
+        return cleaned_data

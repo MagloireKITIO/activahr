@@ -6,14 +6,20 @@ from django.contrib import messages
 from django.contrib.auth.models import User
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 
-from attendance.methods.group_by import group_by_queryset as group_by
 from base.context_processors import intial_notice_period
 from base.methods import closest_numbers, sortby
 from base.views import paginator_qry
 from employee.models import Employee
-from horilla.decorators import login_required, manager_can_enter, permission_required
+from horilla.decorators import (
+    hx_request_required,
+    login_required,
+    manager_can_enter,
+    permission_required,
+)
+from horilla.group_by import group_by_queryset as group_by
 from notifications.signals import notify
 from offboarding.decorators import (
     any_manager_can_enter,
@@ -140,6 +146,7 @@ def pipeline(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("offboarding_view_offboardingemployee")
 def filter_pipeline(request):
     """
@@ -164,6 +171,7 @@ def filter_pipeline(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("offboarding.add_offboarding")
 def create_offboarding(request):
     """
@@ -192,14 +200,17 @@ def create_offboarding(request):
 
 @login_required
 @permission_required("offboarding.delete_offboarding")
-def delete_offboarding(request):
+def delete_offboarding(request, id):
     """
     This method is used to delete offboardings
     """
-    ids = request.GET.getlist("id")
-    Offboarding.objects.filter(id__in=ids).delete()
-    messages.success(request, _("Offboarding deleted"))
-    return redirect(pipeline)
+    try:
+        offboarding = Offboarding.objects.get(id=id)
+        offboarding.delete()
+        messages.success(request, _("Offboarding deleted"))
+    except (Offboarding.DoesNotExist, OverflowError):
+        messages.error(request, _("Offboarding not found"))
+    return redirect(filter_pipeline)
 
 
 @login_required
@@ -262,11 +273,11 @@ def add_employee(request):
                     request.user.employee_get,
                     recipient=instance.employee_id.employee_user_id,
                     verb=f"You have been added to the {stage} of {stage.offboarding_id}",
-                    verb_ar=f"",
-                    verb_de=f"",
-                    verb_es=f"",
-                    verb_fr=f"",
-                    redirect="offboarding/offboarding-pipeline",
+                    verb_ar=f"لقد تمت إضافتك إلى {stage} من {stage.offboarding_id}",
+                    verb_de=f"Du wurdest zu {stage} von {stage.offboarding_id} hinzugefügt",
+                    verb_es=f"Has sido añadido a {stage} de {stage.offboarding_id}",
+                    verb_fr=f"Vous avez été ajouté à {stage} de {stage.offboarding_id}",
+                    redirect=reverse("offboarding-pipeline"),
                     icon="information",
                 )
             return HttpResponse("<script>window.location.reload()</script>")
@@ -290,16 +301,16 @@ def delete_employee(request):
                 id__in=instances.values_list("employee_id__employee_user_id", flat=True)
             ),
             verb=f"You have been removed from the offboarding",
-            verb_ar=f"",
-            verb_de=f"",
-            verb_es=f"",
-            verb_fr=f"",
-            redirect="offboarding/offboarding-pipeline",
+            verb_ar=f"لقد تمت إزالتك من إنهاء الخدمة",
+            verb_de=f"Du wurdest aus dem Offboarding entfernt",
+            verb_es=f"Has sido eliminado del offboarding",
+            verb_fr=f"Vous avez été retiré de l'offboarding",
+            redirect=reverse("offboarding-pipeline"),
             icon="information",
         )
     else:
-        messages.error(request, _("Employees note found"))
-    return redirect(pipeline)
+        messages.error(request, _("Employees not found"))
+    return redirect(filter_pipeline)
 
 
 @login_required
@@ -309,12 +320,20 @@ def delete_stage(request):
     This method  is used to delete the offboarding stage
     """
     ids = request.GET.getlist("ids")
-    OffboardingStage.objects.filter(id__in=ids).delete()
-    messages.success(request, _("Stage deleted"))
-    return redirect(pipeline)
+    try:
+        instances = OffboardingStage.objects.filter(id__in=ids)
+        if instances:
+            instances.delete()
+            messages.success(request, _("Stage deleted"))
+        else:
+            messages.error(request, _("Stage not found"))
+    except OverflowError:
+        messages.error(request, _("Stage not found"))
+    return redirect(filter_pipeline)
 
 
 @login_required
+@hx_request_required
 @any_manager_can_enter("offboarding.change_offboarding")
 def change_stage(request):
     """
@@ -343,11 +362,11 @@ def change_stage(request):
             id__in=employees.values_list("employee_id__employee_user_id", flat=True)
         ),
         verb=f"Offboarding stage has been changed",
-        verb_ar=f"",
-        verb_de=f"",
-        verb_es=f"",
-        verb_fr=f"",
-        redirect="offboarding/offboarding-pipeline",
+        verb_ar=f"تم تغيير مرحلة إنهاء الخدمة",
+        verb_de=f"Die Offboarding-Stufe wurde geändert",
+        verb_es=f"Se ha cambiado la etapa de offboarding",
+        verb_fr=f"L'étape d'offboarding a été changée",
+        redirect=reverse("offboarding-pipeline"),
         icon="information",
     )
     groups = pipeline_grouper({}, [stage.offboarding_id])
@@ -366,6 +385,7 @@ def change_stage(request):
 
 
 @login_required
+@hx_request_required
 @any_manager_can_enter(
     "offboarding.view_offboardingnote", offboarding_employee_can_enter=True
 )
@@ -488,7 +508,6 @@ def add_task(request):
         if form.is_valid():
             form.save()
             messages.success(request, _("Task Added"))
-            return HttpResponse("<script>window.location.reload()</script>")
     return render(
         request,
         "offboarding/task/form.html",
@@ -522,11 +541,11 @@ def update_task_status(request, *args, **kwargs):
             )
         ),
         verb=f"Offboarding Task status has been updated",
-        verb_ar=f"",
-        verb_de=f"",
-        verb_es=f"",
-        verb_fr=f"",
-        redirect="offboarding/offboarding-pipeline",
+        verb_ar=f"تم تحديث حالة مهمة إنهاء الخدمة",
+        verb_de=f"Der Status der Offboarding-Aufgabe wurde aktualisiert",
+        verb_es=f"Se ha actualizado el estado de la tarea de offboarding",
+        verb_fr=f"Le statut de la tâche d'offboarding a été mis à jour",
+        redirect=reverse("offboarding-pipeline"),
         icon="information",
     )
     stage = OffboardingStage.objects.get(id=stage_id)
@@ -591,12 +610,17 @@ def delete_task(request):
     This method is used to delete the task
     """
     task_ids = request.GET.getlist("task_ids")
-    OffboardingTask.objects.filter(id__in=task_ids).delete()
-    messages.success(request, _("Task deleted"))
-    return redirect(pipeline)
+    tasks = OffboardingTask.objects.filter(id__in=task_ids)
+    if tasks:
+        tasks.delete()
+        messages.success(request, _("Task deleted"))
+    else:
+        messages.error(request, _("Task not found"))
+    return redirect(filter_pipeline)
 
 
 @login_required
+@hx_request_required
 def offboarding_individual_view(request, emp_id):
     """
     This method is used to get the individual view of the offboarding employees
@@ -638,14 +662,15 @@ def request_view(request):
     This method is used to view the resignation request
     """
     defatul_filter = {"status": "requested"}
-    filter_instance = LetterFilter(defatul_filter)
+    filter_instance = LetterFilter()
+    letters = ResignationLetter.objects.all()
     offboardings = Offboarding.objects.all()
 
     return render(
         request,
         "offboarding/resignation/requests_view.html",
         {
-            "letters": paginator_qry(filter_instance.qs, request.GET.get("page")),
+            "letters": paginator_qry(letters, request.GET.get("page")),
             "f": filter_instance,
             "filter_dict": {"status": ["Requested"]},
             "offboardings": offboardings,
@@ -676,6 +701,7 @@ def request_single_view(request, id):
 
 
 @login_required
+@hx_request_required
 @check_feature_enabled("resignation_request")
 def search_resignation_request(request):
     """
@@ -752,6 +778,7 @@ def delete_resignation_request(request):
 
 
 @login_required
+@hx_request_required
 @check_feature_enabled("resignation_request")
 def create_resignation_request(request):
     """
@@ -821,10 +848,10 @@ def update_status(request):
                 request.user.employee_get,
                 recipient=letter.employee_id.employee_user_id,
                 verb=f"Resignation request has been {letter.get_status_display()}",
-                verb_ar=f"",
-                verb_de=f"",
-                verb_es=f"",
-                verb_fr=f"",
+                verb_ar=f"تم {letter.get_status_display()} طلب الاستقالة",
+                verb_de=f"Der Rücktrittsantrag wurde {letter.get_status_display()}",
+                verb_es=f"La solicitud de renuncia ha sido {letter.get_status_display()}",
+                verb_fr=f"La demande de démission a été {letter.get_status_display()}",
                 redirect="#",
                 icon="information",
             )
@@ -832,6 +859,7 @@ def update_status(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("offboarding.add_offboardinggeneralsetting")
 def enable_resignation_request(request):
     """

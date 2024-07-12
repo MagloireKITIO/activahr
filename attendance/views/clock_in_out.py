@@ -26,9 +26,9 @@ from attendance.views.views import (
     strtime_seconds,
 )
 from base.context_processors import timerunner_enabled
-from base.models import EmployeeShiftDay
-from base.thread_local_middleware import _thread_locals
-from horilla.decorators import login_required
+from base.models import AttendanceAllowedIP, EmployeeShiftDay
+from horilla.decorators import hx_request_required, login_required
+from horilla.horilla_middlewares import _thread_locals
 
 
 def late_come_create(attendance):
@@ -179,10 +179,29 @@ def clock_in_attendance_and_activity(
 
 
 @login_required
+@hx_request_required
 def clock_in(request):
     """
     This method is used to mark the attendance once per a day and multiple attendance activities.
     """
+    allowed_attendance_ips = AttendanceAllowedIP.objects.first()
+
+    # 'not request.__dict__.get("datetime")' used to check if the request is from biometric device
+
+    if (
+        not request.__dict__.get("datetime")
+        and allowed_attendance_ips
+        and allowed_attendance_ips.is_enabled
+    ):
+
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+        ip = request.META.get("REMOTE_ADDR")
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0]
+
+        if not (ip in allowed_attendance_ips.additional_data["allowed_ips"]):
+            return HttpResponse(_("You cannot mark attendance from this network"))
+
     employee, work_info = employee_exists(request)
     datetime_now = datetime.now()
     if request.__dict__.get("datetime"):
@@ -294,15 +313,19 @@ def clock_out_attendance_and_activity(employee, date_today, now, out_datetime=No
     """
 
     attendance_activities = AttendanceActivity.objects.filter(
-        employee_id=employee
+        employee_id=employee,
     ).order_by("attendance_date", "id")
-    if attendance_activities.exists():
-        attendance_activity = attendance_activities.last()
+
+    if attendance_activities.filter(clock_out__isnull=True).exists():
+        attendance_activity = attendance_activities.filter(
+            clock_out__isnull=True
+        ).last()
         attendance_activity.clock_out = out_datetime
         attendance_activity.clock_out_date = date_today
         attendance_activity.out_datetime = out_datetime
         attendance_activity.save()
-    attendance_activities = attendance_activities.filter(~Q(clock_out=None)).filter(
+
+    attendance_activities = attendance_activities.filter(
         attendance_date=attendance_activity.attendance_date
     )
     # Here calculate the total durations between the attendance activities
@@ -380,6 +403,7 @@ def early_out(attendance, start_time, end_time):
 
 
 @login_required
+@hx_request_required
 def clock_out(request):
     """
     This method is used to set the out date and time for attendance and attendance activity

@@ -4,6 +4,8 @@ middleware.py
 
 from django.apps import apps
 from django.db.models import Q
+from django.http import HttpResponse, HttpResponseNotAllowed
+from django.shortcuts import render
 
 from base.context_processors import AllCompany
 from base.horilla_company_manager import HorillaCompanyManager

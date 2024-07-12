@@ -17,7 +17,7 @@ urlpatterns = [
         name="type-update",
         kwargs={"model": models.LeaveType},
     ),
-    path("type-delete/<int:id>", views.leave_type_delete, name="type-delete"),
+    path("type-delete/<int:obj_id>", views.leave_type_delete, name="type-delete"),
     path("type-filter", views.leave_type_filter, name="type-filter"),
     path("request-creation", views.leave_request_creation, name="request-creation"),
     path(
@@ -48,6 +48,11 @@ urlpatterns = [
         "leave-requests-bulk-approve",
         views.leave_request_bulk_approve,
         name="leave-requests-bulk-approve",
+    ),
+    path(
+        "leave-requests-bulk-reject",
+        views.leave_bulk_reject,
+        name="leave-requests-bulk-reject",
     ),
     path("request-cancel/<int:id>", views.leave_request_cancel, name="request-cancel"),
     path(
@@ -101,6 +106,17 @@ urlpatterns = [
     path("restrict-creation", views.restrict_creation, name="restrict-creation"),
     path("restrict-update/<int:id>", views.restrict_update, name="restrict-update"),
     path("restrict-delete/<int:id>", views.restrict_delete, name="restrict-delete"),
+    path(
+        "restrict-days-bulk-delete",
+        views.restrict_days_bulk_delete,
+        name="restrict-days-bulk-delete",
+    ),
+    path(
+        "restrict-day-select-filter",
+        views.restrict_day_select_filter,
+        name="restrict-day-select-filter",
+    ),
+    path("restrict-day-select", views.restrict_day_select, name="restrict-day-select"),
     path(
         "holidays-excel-template",
         views.holidays_excel_template,
@@ -417,5 +433,10 @@ urlpatterns = [
         "create-compensatory-leave-comment/<int:comp_leave_id>/",
         views.create_compensatory_leave_comment,
         name="create-compensatory-leave-comment",
+    ),
+    path(
+        "check-interview-conflicts",
+        views.check_interview_conflicts,
+        name="check-interview-conflicts",
     ),
 ]

@@ -15,10 +15,10 @@ from django.contrib import messages
 from django.db.models import ProtectedError, Q
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from attendance.methods.group_by import group_by_queryset
 from base.methods import (
     closest_numbers,
     export_data,
@@ -29,17 +29,28 @@ from base.methods import (
 )
 from base.models import Company
 from employee.models import Employee, EmployeeWorkInformation
-from horilla.decorators import login_required, owner_can_enter, permission_required
+from horilla.decorators import (
+    hx_request_required,
+    login_required,
+    owner_can_enter,
+    permission_required,
+)
+from horilla.group_by import group_by_queryset
 from notifications.signals import notify
 from payroll.context_processors import get_active_employees
 from payroll.filters import ContractFilter, ContractReGroup, PayslipFilter
-from payroll.forms.component_forms import ContractExportFieldForm, PayrollSettingsForm
+from payroll.forms.component_forms import (
+    ContractExportFieldForm,
+    PayrollSettingsForm,
+    PayslipAutoGenerateForm,
+)
 from payroll.methods.methods import paginator_qry, save_payslip
 from payroll.models.models import (
     Contract,
     FilingStatus,
     PayrollGeneralSetting,
     Payslip,
+    PayslipAutoGenerate,
     Reimbursement,
     ReimbursementFile,
     ReimbursementrequestComment,
@@ -120,6 +131,7 @@ def contract_update(request, contract_id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.change_contract")
 def contract_status_update(request, contract_id):
     from payroll.forms.forms import ContractForm
@@ -174,6 +186,42 @@ def contract_status_update(request, contract_id):
 
 @login_required
 @permission_required("payroll.change_contract")
+def bulk_contract_status_update(request):
+    status = request.POST.get("status")
+    ids = eval(request.POST.get("ids"))
+    all_contracts = Contract.objects.all()
+    contracts = all_contracts.filter(id__in=ids)
+
+    for contract in contracts:
+        save = True
+        if status in ["active", "draft"]:
+            active_contract = all_contracts.filter(
+                contract_status="active", employee_id=contract.employee_id
+            ).exists()
+            draft_contract = all_contracts.filter(
+                contract_status="draft", employee_id=contract.employee_id
+            ).exists()
+            if (status == "active" and active_contract) or (
+                status == "draft" and draft_contract
+            ):
+                save = False
+                messages.info(
+                    request,
+                    _("An {} contract already exists for {}").format(
+                        status, contract.employee_id
+                    ),
+                )
+        if save:
+            contract.contract_status = status
+            contract.save()
+            messages.success(
+                request, _("The contract status has been updated successfully.")
+            )
+    return HttpResponse("success")
+
+
+@login_required
+@permission_required("payroll.change_contract")
 def update_contract_filing_status(request, contract_id):
     if request.method == "POST":
         contract = get_object_or_404(Contract, id=contract_id)
@@ -197,6 +245,7 @@ def update_contract_filing_status(request, contract_id):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.delete_contract")
 def contract_delete(request, contract_id):
     """
@@ -256,6 +305,7 @@ def contract_view(request):
 
 
 @login_required
+@hx_request_required
 @owner_can_enter("payroll.view_contract", Contract)
 def view_single_contract(request, contract_id):
     """
@@ -299,6 +349,7 @@ def view_single_contract(request, contract_id):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.view_contract")
 def contract_filter(request):
     """
@@ -569,6 +620,8 @@ def delete_payslip(request, payslip_id):
         messages.error(request, _("Payslip not found."))
     except ProtectedError:
         messages.error(request, _("Something went wrong"))
+    if not Payslip.objects.filter():
+        return HttpResponse("<script>window.location.reload()</script>")
     return redirect(filter_payslip)
 
 
@@ -979,7 +1032,6 @@ def payslip_export(request):
             start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
 
-            # Print the formatted date for each format
             for format_name, format_string in date_formats.items():
                 if format_name == date_format:
                     formatted_start_date = start_date.strftime(format_string)
@@ -1431,12 +1483,14 @@ def payslip_pdf(request, id):
             data["net_deductions"],
         ]:
             data["all_deductions"].extend(deduction_list)
+
+        data["all_allowances"] = data["allowances"].copy()
         equalize_lists_length(data["allowances"], data["all_deductions"])
         data["zipped_data"] = zip(data["allowances"], data["all_deductions"])
         data["host"] = request.get_host()
         data["protocol"] = "https" if request.is_secure() else "http"
 
-    return generate_pdf("payroll/payslip/individual_pdf.html", context=data)
+    return generate_pdf("payroll/payslip/individual_pdf.html", context=data, html=False)
 
 
 @login_required
@@ -1559,7 +1613,7 @@ def create_payrollrequest_comment(request, payroll_id):
                         verb_de=f"{payroll.employee_id}s Rückerstattungsantrag hat einen Kommentar erhalten.",
                         verb_es=f"La solicitud de reembolso de gastos de {payroll.employee_id} ha recibido un comentario.",
                         verb_fr=f"La demande de remboursement de frais de {payroll.employee_id} a reçu un commentaire.",
-                        redirect="/payroll/view-reimbursement",
+                        redirect=reverse("view-reimbursement"),
                         icon="chatbox-ellipses",
                     )
                 elif (
@@ -1575,7 +1629,7 @@ def create_payrollrequest_comment(request, payroll_id):
                         verb_de="Ihr Rückerstattungsantrag hat einen Kommentar erhalten.",
                         verb_es="Tu solicitud de reembolso ha recibido un comentario.",
                         verb_fr="Votre demande de remboursement a reçu un commentaire.",
-                        redirect="/payroll/view-reimbursement",
+                        redirect=reverse("view-reimbursement"),
                         icon="chatbox-ellipses",
                     )
                 else:
@@ -1591,7 +1645,7 @@ def create_payrollrequest_comment(request, payroll_id):
                         verb_de=f"{payroll.employee_id}s Rückerstattungsantrag hat einen Kommentar erhalten.",
                         verb_es=f"La solicitud de reembolso de gastos de {payroll.employee_id} ha recibido un comentario.",
                         verb_fr=f"La demande de remboursement de frais de {payroll.employee_id} a reçu un commentaire.",
-                        redirect="/payroll/view-reimbursement",
+                        redirect=reverse("view-reimbursement"),
                         icon="chatbox-ellipses",
                     )
             else:
@@ -1604,7 +1658,7 @@ def create_payrollrequest_comment(request, payroll_id):
                     verb_de="Ihr Rückerstattungsantrag hat einen Kommentar erhalten.",
                     verb_es="Tu solicitud de reembolso ha recibido un comentario.",
                     verb_fr="Votre demande de remboursement a reçu un commentaire.",
-                    redirect="/payroll/view-reimbursement",
+                    redirect=reverse("view-reimbursement"),
                     icon="chatbox-ellipses",
                 )
 
@@ -1625,6 +1679,7 @@ def create_payrollrequest_comment(request, payroll_id):
 
 
 @login_required
+@hx_request_required
 def view_payrollrequest_comment(request, payroll_id):
     """
     This method is used to show Reimbursement request comments
@@ -1664,8 +1719,10 @@ def delete_payrollrequest_comment(request, comment_id):
     """
     This method is used to delete Reimbursement request comments
     """
-    comment = ReimbursementrequestComment.objects.get(id=comment_id)
-    reimbursementrequest = comment.request_id.id
+    comment = ReimbursementrequestComment.objects.filter(id=comment_id)
+    if not request.user.has_perm("delete_reimbursementrequestcomment"):
+        comment = comment.filter(employee_id__employee_user_id=request.user)
+    reimbursementrequest = comment.first().request_id.id
     comment.delete()
 
     messages.success(request, _("Comment deleted successfully!"))
@@ -1678,7 +1735,12 @@ def delete_reimbursement_comment_file(request):
     Used to delete attachment
     """
     ids = request.GET.getlist("ids")
-    ReimbursementFile.objects.filter(id__in=ids).delete()
+    records = ReimbursementFile.objects.filter(id__in=ids)
+    if not request.user.has_perm("payroll.delete_reimbursmentfile"):
+        records = records.filter(employee_id__employee_user_id=request.user)
+
+    records.delete()
+
     payroll_id = request.GET["payroll_id"]
     comments = ReimbursementrequestComment.objects.filter(
         request_id=payroll_id
@@ -1705,4 +1767,100 @@ def initial_notice_period(request):
     settings.notice_period = max(notice_period, 0)
     settings.save()
     messages.success(request, "Initial notice period updated")
+    return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+
+
+# ===========================Auto payslip generate================================
+
+
+@login_required
+@permission_required("payroll.view_PayslipAutoGenerate")
+def auto_payslip_settings_view(request):
+    payslip_auto_generate = PayslipAutoGenerate.objects.all()
+
+    context = {"payslip_auto_generate": payslip_auto_generate}
+    return render(request, "payroll/settings/auto_payslip_settings.html", context)
+
+
+@login_required
+@hx_request_required
+@permission_required("payroll.change_PayslipAutoGenerate")
+def create_or_update_auto_payslip(request, auto_id=None):
+    auto_payslip = None
+    if auto_id:
+        auto_payslip = PayslipAutoGenerate.objects.get(id=auto_id)
+    form = PayslipAutoGenerateForm(instance=auto_payslip)
+    if request.method == "POST":
+        form = PayslipAutoGenerateForm(request.POST, instance=auto_payslip)
+        if form.is_valid():
+            auto_payslip = form.save()
+            company = (
+                auto_payslip.company_id if auto_payslip.company_id else "All company"
+            )
+            messages.success(
+                request, _(f"Payslip Auto generate for {company} created successfully ")
+            )
+            return HttpResponse("<script>window.location.reload()</script>")
+    return render(
+        request, "payroll/settings/auto_payslip_create_or_update.html", {"form": form}
+    )
+
+
+@login_required
+@permission_required("payroll.change_PayslipAutoGenerate")
+def activate_auto_payslip_generate(request):
+    """
+    ajax function to update is active field in grace time.
+    Args:
+    - isChecked: Boolean value representing the state of grace time,
+    - autoId: Id of PayslipAutoGenerate object
+    """
+    isChecked = request.POST.get("isChecked")
+    autoId = request.POST.get("autoId")
+    payslip_auto = PayslipAutoGenerate.objects.get(id=autoId)
+    if isChecked == "true":
+        payslip_auto.auto_generate = True
+        response = {
+            "type": "success",
+            "message": _("Auto paslip generate activated successfully."),
+        }
+    else:
+        payslip_auto.auto_generate = False
+        response = {
+            "type": "success",
+            "message": _("Auto paslip generate deactivated successfully."),
+        }
+    payslip_auto.save()
+    return JsonResponse(response)
+
+
+@login_required
+@hx_request_required
+@permission_required("payroll.delete_PayslipAutoGenerate")
+def delete_auto_payslip(request, auto_id):
+    """
+    Delete a PayslipAutoGenerate object.
+
+    Args:
+        auto_id: The ID of PayslipAutoGenerate object to delete.
+
+    Returns:
+        Redirects to the contract view after successfully deleting the contract.
+
+    """
+    try:
+        auto_payslip = PayslipAutoGenerate.objects.get(id=auto_id)
+        if not auto_payslip.auto_generate:
+            company = (
+                auto_payslip.company_id if auto_payslip.company_id else "All company"
+            )
+            auto_payslip.delete()
+            messages.success(
+                request, _(f"Payslip auto generate for {company} deleted successfully.")
+            )
+        else:
+            messages.info(request, _(f"Active 'Payslip auto generate' cannot delete."))
+        return HttpResponse("<script>window.location.reload();</script>")
+    except PayslipAutoGenerate.DoesNotExist:
+        messages.error(request, _("Payslip auto generate not found."))
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))

@@ -155,18 +155,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Internationalization
-# https://docs.djangoproject.com/en/4.1/topics/i18n/
-
-LANGUAGE_CODE = "en-us"
-
-TIME_ZONE = "Asia/Kolkata"
-
-USE_I18N = True
-
-USE_TZ = True
-
-
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
@@ -214,8 +202,6 @@ DJANGO_NOTIFICATIONS_CONFIG = {
 
 X_FRAME_OPTIONS = "SAMEORIGIN"
 
-LANGUAGE_CODE = "en-us"
-
 LANGUAGES = (
     ("en", "English (US)"),
     ("de", "Deutsche"),
@@ -227,6 +213,12 @@ LANGUAGES = (
 LOCALE_PATHS = [
     join(BASE_DIR, "horilla", "locale"),
 ]
+
+
+# Internationalization
+# https://docs.djangoproject.com/en/4.1/topics/i18n/
+
+LANGUAGE_CODE = "en-us"
 
 TIME_ZONE = "Asia/Kolkata"
 

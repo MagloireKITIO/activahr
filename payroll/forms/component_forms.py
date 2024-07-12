@@ -4,6 +4,7 @@ of form fields and widgets for the corresponding models in the payroll managemen
 """
 
 import datetime
+import logging
 import uuid
 from typing import Any
 
@@ -12,11 +13,11 @@ from django.template.loader import render_to_string
 from django.utils.translation import gettext_lazy as _
 
 import payroll.models.models
-from base import thread_local_middleware
 from base.forms import Form, ModelForm
 from base.methods import reload_queryset
 from employee.filters import EmployeeFilter
 from employee.models import BonusPoint, Employee
+from horilla import horilla_middlewares
 from horilla_widgets.forms import HorillaForm
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
@@ -30,10 +31,13 @@ from payroll.models.models import (
     LoanAccount,
     MultipleCondition,
     Payslip,
+    PayslipAutoGenerate,
     Reimbursement,
     ReimbursementMultipleAttachment,
 )
 from payroll.widgets import component_widgets as widget
+
+logger = logging.getLogger(__name__)
 
 
 class AllowanceForm(forms.ModelForm):
@@ -98,7 +102,7 @@ class AllowanceForm(forms.ModelForm):
                     condition.save()
                     multiple_conditions.append(condition)
         except Exception as e:
-            print(e)
+            logger(e)
         if commit:
             self.instance.other_conditions.add(*multiple_conditions)
         return multiple_conditions
@@ -226,8 +230,16 @@ class PayslipForm(ModelForm):
         ]
         exclude = ["is_active"]
         widgets = {
-            "start_date": forms.DateInput(attrs={"type": "date"}),
-            "end_date": forms.DateInput(attrs={"type": "date"}),
+            "start_date": forms.DateInput(
+                attrs={
+                    "type": "date",
+                }
+            ),
+            "end_date": forms.DateInput(
+                attrs={
+                    "type": "date",
+                }
+            ),
         }
 
 
@@ -563,7 +575,7 @@ class ReimbursementForm(ModelForm):
         if not self.instance.pk:
             self.initial["allowance_on"] = str(datetime.date.today())
 
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         if request:
             employee = (
                 request.user.employee_get
@@ -647,12 +659,13 @@ class ReimbursementForm(ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         if self.instance.pk:
             employee_id = self.instance.employee_id
             type = self.instance.type
 
         else:
-            employee_id = cleaned_data["employee_id"]
+            employee_id = request.user.employee_get
             type = cleaned_data["type"]
 
         available_points = BonusPoint.objects.filter(employee_id=employee_id).first()
@@ -758,3 +771,18 @@ class ConditionForm(ModelForm):
             "condition",
             "value",
         ]
+
+
+# ===========================Auto payslip generate================================
+class PayslipAutoGenerateForm(ModelForm):
+    class Meta:
+        model = PayslipAutoGenerate
+        fields = ["generate_day", "company_id", "auto_generate"]
+
+    def as_p(self):
+        """
+        Render the form fields as HTML table rows with Bootstrap styling.
+        """
+        context = {"form": self}
+        table_html = render_to_string("common_form.html", context)
+        return table_html

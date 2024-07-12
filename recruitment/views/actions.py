@@ -15,9 +15,9 @@ from django.utils.translation import gettext as __
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
 
-from attendance.methods.group_by import group_by_queryset
 from employee.models import Employee
 from horilla.decorators import login_required, permission_required
+from horilla.group_by import group_by_queryset
 from notifications.signals import notify
 from recruitment.decorators import manager_can_enter, recruitment_manager_can_enter
 from recruitment.filters import StageFilter
@@ -36,43 +36,48 @@ def recruitment_delete(request, rec_id):
         id : recruitment_id
     """
     try:
-        recruitment_obj = Recruitment.objects.get(id=rec_id)
-    except Recruitment.DoesNotExist:
-        messages.error(request, _("Recruitment not found."))
-        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-    recruitment_mangers = recruitment_obj.recruitment_managers.all()
-    all_stage_permissions = Permission.objects.filter(
-        content_type__app_label="recruitment", content_type__model="stage"
-    )
-    all_candidate_permissions = Permission.objects.filter(
-        content_type__app_label="recruitment", content_type__model="candidate"
-    )
-    for manager in recruitment_mangers:
-        all_this_manger = manager.recruitment_set.all()
-        if len(all_this_manger) == 1:
-            for stage_permission in all_candidate_permissions:
-                manager.employee_user_id.user_permissions.remove(stage_permission.id)
-            for candidate_permission in all_stage_permissions:
-                manager.employee_user_id.user_permissions.remove(
-                    candidate_permission.id
-                )
-    try:
-        recruitment_obj.delete()
-        messages.success(request, _("Recruitment deleted successfully."))
-    except ProtectedError as e:
-        model_verbose_name_sets = set()
-        for obj in e.protected_objects:
-            model_verbose_name_sets.add(__(obj._meta.verbose_name.capitalize()))
-        model_verbose_name_str = (",").join(model_verbose_name_sets)
-        messages.error(
-            request,
-            _(
-                "You cannot delete this recruitment as it is using in {}".format(
-                    model_verbose_name_str
-                )
-            ),
+        try:
+            recruitment_obj = Recruitment.objects.get(id=rec_id)
+        except Recruitment.DoesNotExist:
+            messages.error(request, _("Recruitment not found."))
+            return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+        recruitment_mangers = recruitment_obj.recruitment_managers.all()
+        all_stage_permissions = Permission.objects.filter(
+            content_type__app_label="recruitment", content_type__model="stage"
         )
-    recruitment_obj = Recruitment.objects.all()
+        all_candidate_permissions = Permission.objects.filter(
+            content_type__app_label="recruitment", content_type__model="candidate"
+        )
+        for manager in recruitment_mangers:
+            all_this_manger = manager.recruitment_set.all()
+            if len(all_this_manger) == 1:
+                for stage_permission in all_candidate_permissions:
+                    manager.employee_user_id.user_permissions.remove(
+                        stage_permission.id
+                    )
+                for candidate_permission in all_stage_permissions:
+                    manager.employee_user_id.user_permissions.remove(
+                        candidate_permission.id
+                    )
+        try:
+            recruitment_obj.delete()
+            messages.success(request, _("Recruitment deleted successfully."))
+        except ProtectedError as e:
+            model_verbose_name_sets = set()
+            for obj in e.protected_objects:
+                model_verbose_name_sets.add(__(obj._meta.verbose_name.capitalize()))
+            model_verbose_name_str = (",").join(model_verbose_name_sets)
+            messages.error(
+                request,
+                _(
+                    "You cannot delete this recruitment as it is using in {}".format(
+                        model_verbose_name_str
+                    )
+                ),
+            )
+        recruitment_obj = Recruitment.objects.all()
+    except (Recruitment.DoesNotExist, OverflowError):
+        messages.error(request, _("Recruitment Does not exists.."))
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
@@ -131,9 +136,10 @@ def note_delete_individual(request, note_id):
     This method is used to delete the stage note
     """
     note = StageNote.objects.get(id=note_id)
+    candidate_id = note.candidate_id.id
     note.delete()
     messages.success(request, _("Note deleted."))
-    return HttpResponse("<script>window.location.reload()</script>")
+    return redirect(f"/recruitment/add-note/{candidate_id}/")
 
 
 @login_required
@@ -146,40 +152,48 @@ def stage_delete(request, stage_id):
         id : stage_id
     """
     try:
-        stage_obj = Stage.objects.get(id=stage_id)
-    except Stage.DoesNotExist:
-        messages.error(request, _("Stage not found."))
-        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+        try:
+            stage_obj = Stage.objects.get(id=stage_id)
+            recruitment_id = stage_obj.recruitment_id.id
+        except Stage.DoesNotExist:
+            messages.error(request, _("Stage not found."))
+            return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
-    stage_managers = stage_obj.stage_managers.all()
-    for manager in stage_managers:
-        all_this_manger = manager.stage_set.all()
-        if len(all_this_manger) == 1:
-            view_recruitment = Permission.objects.get(codename="view_recruitment")
-            manager.employee_user_id.user_permissions.remove(view_recruitment.id)
-        initial_stage_manager = all_this_manger.filter(stage_type="initial")
-        if len(initial_stage_manager) == 1:
-            add_candidate = Permission.objects.get(codename="add_candidate")
-            change_candidate = Permission.objects.get(codename="change_candidate")
-            manager.employee_user_id.user_permissions.remove(add_candidate.id)
-            manager.employee_user_id.user_permissions.remove(change_candidate.id)
-        stage_obj.stage_managers.remove(manager)
-    try:
-        stage_obj.delete()
-        messages.success(request, _("Stage deleted successfully."))
-    except ProtectedError as e:
-        models_verbose_name_sets = set()
-        for obj in e.protected_objects:
-            models_verbose_name_sets.add(__(obj._meta.verbose_name.capitalize()))
-        models_verbose_name_str = (",").join(models_verbose_name_sets)
-        messages.error(
-            request,
-            _(
-                "You cannot delete this stage while it's in use for {}".format(
-                    models_verbose_name_str
-                )
-            ),
-        )
+        stage_managers = stage_obj.stage_managers.all()
+        for manager in stage_managers:
+            all_this_manger = manager.stage_set.all()
+            if len(all_this_manger) == 1:
+                view_recruitment = Permission.objects.get(codename="view_recruitment")
+                manager.employee_user_id.user_permissions.remove(view_recruitment.id)
+            initial_stage_manager = all_this_manger.filter(stage_type="initial")
+            if len(initial_stage_manager) == 1:
+                add_candidate = Permission.objects.get(codename="add_candidate")
+                change_candidate = Permission.objects.get(codename="change_candidate")
+                manager.employee_user_id.user_permissions.remove(add_candidate.id)
+                manager.employee_user_id.user_permissions.remove(change_candidate.id)
+            stage_obj.stage_managers.remove(manager)
+        try:
+            stage_obj.delete()
+            messages.success(request, _("Stage deleted successfully."))
+        except ProtectedError as e:
+            models_verbose_name_sets = set()
+            for obj in e.protected_objects:
+                models_verbose_name_sets.add(__(obj._meta.verbose_name.capitalize()))
+            models_verbose_name_str = (",").join(models_verbose_name_sets)
+            messages.error(
+                request,
+                _(
+                    "You cannot delete this stage while it's in use for {}".format(
+                        models_verbose_name_str
+                    )
+                ),
+            )
+    except (Stage.DoesNotExist, OverflowError):
+        messages.error(request, _("Stage Does not exists.."))
+    hx_request = request.META.get("HTTP_HX_REQUEST")
+    hx_current_url = request.META.get("HTTP_HX_CURRENT_URL")
+    if hx_request and hx_request == "true" and "stage-view" in hx_current_url:
+        return redirect(f"/recruitment/stage-data/{recruitment_id}/")
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
@@ -193,23 +207,26 @@ def candidate_delete(request, cand_id):
         id : candidate_id
     """
     try:
-        Candidate.objects.get(id=cand_id).delete()
-        messages.success(request, _("Candidate deleted successfully."))
-    except Candidate.DoesNotExist:
-        messages.error(request, _("Candidate not found."))
-    except ProtectedError as e:
-        models_verbose_name_set = set()
-        for obj in e.protected_objects:
-            models_verbose_name_set.add(__(obj._meta.verbose_name.capitalize()))
-        models_verbose_name_str = (",").join(models_verbose_name_set)
-        messages.error(
-            request,
-            _(
-                "You cannot delete this candidate because the candidate is in {}.".format(
-                    models_verbose_name_str
-                )
-            ),
-        )
+        try:
+            Candidate.objects.get(id=cand_id).delete()
+            messages.success(request, _("Candidate deleted successfully."))
+        except Candidate.DoesNotExist:
+            messages.error(request, _("Candidate not found."))
+        except ProtectedError as e:
+            models_verbose_name_set = set()
+            for obj in e.protected_objects:
+                models_verbose_name_set.add(__(obj._meta.verbose_name.capitalize()))
+            models_verbose_name_str = (",").join(models_verbose_name_set)
+            messages.error(
+                request,
+                _(
+                    "You cannot delete this candidate because the candidate is in {}.".format(
+                        models_verbose_name_str
+                    )
+                ),
+            )
+    except (Candidate.DoesNotExist, OverflowError):
+        messages.error(request, _("Candidate Does not exists."))
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
@@ -245,11 +262,14 @@ def candidate_archive(request, cand_id):
     """
     This method is used to archive or un-archive candidates
     """
-    candidate_obj = Candidate.objects.get(id=cand_id)
-    candidate_obj.is_active = not candidate_obj.is_active
-    candidate_obj.save()
-    message = _("archived") if not candidate_obj.is_active else _("un-archived")
-    messages.success(request, _("Candidate is %(message)s") % {"message": message})
+    try:
+        candidate_obj = Candidate.objects.get(id=cand_id)
+        candidate_obj.is_active = not candidate_obj.is_active
+        candidate_obj.save()
+        message = _("archived") if not candidate_obj.is_active else _("un-archived")
+        messages.success(request, _("Candidate is %(message)s") % {"message": message})
+    except (Candidate.DoesNotExist, OverflowError):
+        messages.error(request, _("Candidate Does not exists."))
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 

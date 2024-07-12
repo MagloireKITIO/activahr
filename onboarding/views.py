@@ -27,11 +27,11 @@ from django.db.models import ProtectedError
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils.translation import gettext as __
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
 
-from attendance.methods.group_by import group_by_queryset as general_group_by
 from base.backends import ConfiguredEmailBackend
 from base.methods import (
     closest_numbers,
@@ -49,6 +49,7 @@ from horilla.decorators import (
     login_required,
     permission_required,
 )
+from horilla.group_by import group_by_queryset as general_group_by
 from notifications.signals import notify
 from onboarding.decorators import (
     all_manager_can_enter,
@@ -133,7 +134,7 @@ def stage_save(form, recruitment, request, rec_id):
         verb_es="Ha sido seleccionado/a como responsable de etapa de incorporación.",
         verb_fr="Vous avez été choisi(e) en tant que responsable de l'étape d'intégration.",
         icon="people-circle",
-        redirect="/onboarding/onboarding-view",
+        redirect=reverse("onboarding-view"),
     )
     response = render(
         request, "onboarding/stage_form.html", {"form": form, "id": rec_id}
@@ -176,7 +177,7 @@ def stage_update(request, stage_id, recruitment_id):
                 verb_es="Ha sido seleccionado/a como responsable de etapa de incorporación.",
                 verb_fr="Vous avez été choisi(e) en tant que responsable de l'étape d'intégration.",
                 icon="people-circle",
-                redirect="/onboarding/onboarding-view",
+                redirect=reverse("onboarding-view"),
             )
             response = render(
                 request,
@@ -268,7 +269,7 @@ def task_creation(request):
                 verb_es="Ha sido seleccionado/a como responsable de tareas de incorporación.",
                 verb_fr="Vous avez été choisi(e) en tant que responsable des tâches d'intégration.",
                 icon="people-circle",
-                redirect="/onboarding/onboarding-view",
+                redirect=reverse("onboarding-view"),
             )
             response = render(
                 request,
@@ -324,7 +325,7 @@ def task_update(
                 verb_es="Ha sido seleccionado/a como responsable de tareas de incorporación.",
                 verb_fr="Vous avez été choisi(e) en tant que responsable des tâches d'intégration.",
                 icon="people-circle",
-                redirect="/onboarding/onboarding-view",
+                redirect=reverse("onboarding-view"),
             )
             response = render(
                 request,
@@ -463,6 +464,7 @@ def candidate_delete(request, obj_id):
 
 
 @login_required
+@hx_request_required
 @all_manager_can_enter("onboarding.view_candidatestage")
 def candidates_single_view(request, id, **kwargs):
     """
@@ -587,6 +589,7 @@ def hired_candidate_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("candidate.view_candidate")
 def candidate_filter(request):
     """
@@ -652,9 +655,6 @@ def email_send(request):
         ).values_list("body", flat=True)
     )
 
-    if not candidates:
-        messages.info(request, "Please choose candidates")
-
     attachments_other = []
     for file in other_attachments:
         attachments_other.append((file.name, file.read(), file.content_type))
@@ -662,6 +662,11 @@ def email_send(request):
     for cand_id in candidates:
         attachments = list(set(attachments_other) | set([]))
         candidate = Candidate.objects.get(id=cand_id)
+        if candidate.converted_employee_id:
+            messages.info(
+                request, _(f"{candidate} has already been converted to employee.")
+            )
+            continue
         for html in bodys:
             # due to not having solid template we first need to pass the context
             template_bdy = template.Template(html)
@@ -682,6 +687,8 @@ def email_send(request):
             new_portal = existing_portal.first()
             new_portal.token = token
             new_portal.used = False
+            new_portal.count = 0
+            new_portal.profile = None
             new_portal.save()
         else:
             OnboardingPortal(candidate_id=candidate, token=token).save()
@@ -697,7 +704,7 @@ def email_send(request):
         email = EmailMessage(
             f"Hello {candidate.name}, Congratulations on your selection!",
             html_message,
-            email_backend.dynamic_username_with_display_name,
+            email_backend.dynamic_from_email_with_display_name,
             [candidate.email],
         )
         email.content_subtype = "html"
@@ -806,6 +813,8 @@ def onboarding_view(request):
             )
     recruitments = recruitments.filter(is_active=True).distinct()
     status = request.GET.get("closed")
+    if not status:
+        recruitments = recruitments.filter(closed=False)
 
     onboarding_stages = OnboardingStage.objects.all()
     choices = CandidateTask.choice
@@ -839,11 +848,29 @@ def onboarding_view(request):
 @login_required
 @all_manager_can_enter("onboarding.view_candidatestage")
 def kanban_view(request):
+    # filter_obj = RecruitmentFilter(request.GET)
+    # # is active filteration not providing on pipeline
+    # recruitments = filter_obj.qs.filter(is_active=True)
     filter_obj = RecruitmentFilter(request.GET)
     # is active filteration not providing on pipeline
-    recruitments = filter_obj.qs.filter(is_active=True)
+    recruitments = filter_obj.qs
+    if not request.user.has_perm("onboarding.view_candidatestage"):
+        recruitments = recruitments.filter(
+            is_active=True, recruitment_managers__in=[request.user.employee_get]
+        ) | recruitments.filter(
+            onboarding_stage__employee_id__in=[request.user.employee_get]
+        )
+    employee_tasks = request.user.employee_get.onboarding_task.all()
+    for task in employee_tasks:
+        if task.stage_id and task.stage_id.recruitment_id not in recruitments:
+            recruitments = recruitments | filter_obj.qs.filter(
+                id=task.stage_id.recruitment_id.id
+            )
+    recruitments = recruitments.filter(is_active=True).distinct()
 
     status = request.GET.get("closed")
+    if not status:
+        recruitments = recruitments.filter(closed=False)
 
     onboarding_stages = OnboardingStage.objects.all()
     choices = CandidateTask.choice
@@ -882,6 +909,9 @@ def kanban_view(request):
     )
 
 
+portal_user = {}
+
+
 def user_creation(request, token):
     """
     function used to create user account in onboarding portal.
@@ -896,16 +926,13 @@ def user_creation(request, token):
     """
     try:
         onboarding_portal = OnboardingPortal.objects.get(token=token)
+        if not onboarding_portal or onboarding_portal.used is True:
+            return render(request, "404.html")
+        if onboarding_portal.count == 3:
+            return redirect("employee-bank-details", token)
         candidate = onboarding_portal.candidate_id
         user = User.objects.filter(username=candidate.email).first()
-
         form = UserCreationForm(instance=user)
-        if (
-            not onboarding_portal
-            or onboarding_portal.used is True
-            and request.user.is_anonymous
-        ):
-            return render(request, "404.html")
         try:
             if request.method == "POST":
                 form = UserCreationForm(request.POST, instance=user)
@@ -939,11 +966,10 @@ def user_save(form, onboarding_portal, request, token):
     """
     user = form.save(commit=False)
     user.username = onboarding_portal.candidate_id.email
-    user.save()
-    onboarding_portal.used = True
-    onboarding_portal.save()
-    login(request, user)
+    session_key = request.session.session_key
+    portal_user[session_key] = user
     onboarding_portal.count = 1
+    onboarding_portal.save()
     messages.success(request, _("Account created successfully.."))
     return redirect("profile-view", token)
 
@@ -962,21 +988,22 @@ def profile_view(request, token):
     """
     onboarding_portal = OnboardingPortal.objects.filter(token=token).first()
     if onboarding_portal is None:
-        return HttpResponse("Denied")
+        return render(request, "404.html")
     candidate = onboarding_portal.candidate_id
-    user = User.objects.get(username=candidate.email)
     if request.method == "POST":
         profile = request.FILES.get("profile")
         if profile is not None:
             candidate.profile = profile
-            candidate.save()
+            onboarding_portal.profile = profile
             onboarding_portal.count = 2
+            onboarding_portal.save()
             messages.success(request, _("Profile picture updated successfully.."))
     return render(
         request,
         "onboarding/profile_view.html",
         {
             "candidate": candidate,
+            "profile": onboarding_portal.profile,
             "token": token,
             "company": candidate.recruitment_id.company_id,
         },
@@ -997,7 +1024,7 @@ def employee_creation(request, token):
     """
     onboarding_portal = OnboardingPortal.objects.filter(token=token).first()
     if onboarding_portal is None:
-        return HttpResponse("Denied.")
+        return render(request, "404.html")
     candidate = onboarding_portal.candidate_id
     initial = {
         "employee_first_name": candidate.name,
@@ -1005,25 +1032,35 @@ def employee_creation(request, token):
         "address": candidate.address,
         "dob": candidate.dob,
     }
-    user = User.objects.filter(username=candidate.email).first()
+    session_key = request.session.session_key
+    user = portal_user[session_key]
+    if Employee.objects.filter(email=user).exists():
+        messages.success(request, _("Employee with email id already exists."))
+        return redirect("login")
     if Employee.objects.filter(employee_user_id=user).first() is not None:
+        employee = Employee.objects.filter(employee_user_id=user).first()
+        if employee.employee_bank_details:
+            messages.success(request, _("Employee already exists.."))
+            return redirect("login")
         initial = Employee.objects.filter(employee_user_id=user).first().__dict__
 
     form = EmployeeCreationForm(
-        initial,
+        initial=initial,
     )
-    form.errors.clear()
+    # form.errors.clear()
     if request.method == "POST":
         instance = Employee.objects.filter(employee_user_id=user).first()
-        form_data = EmployeeCreationForm(
+        form = EmployeeCreationForm(
             request.POST,
             instance=instance,
         )
-        if form_data.is_valid():
-            employee_personal_info = form_data.save(commit=False)
+        if form.is_valid():
+            user.save()
+            login(request, user)
+            employee_personal_info = form.save(commit=False)
             employee_personal_info.employee_user_id = user
             employee_personal_info.email = candidate.email
-            employee_personal_info.employee_profile = candidate.profile
+            employee_personal_info.employee_profile = onboarding_portal.profile
             employee_personal_info.save()
             job_position = onboarding_portal.candidate_id.job_position_id
             existing_work_info = EmployeeWorkInformation.objects.filter(
@@ -1035,6 +1072,7 @@ def employee_creation(request, token):
             work_info.employee_id = employee_personal_info
             work_info.job_position_id = job_position
             work_info.date_joining = candidate.joining_date
+            work_info.email = candidate.email
             work_info.save()
             onboarding_portal.count = 3
             onboarding_portal.save()
@@ -1042,8 +1080,6 @@ def employee_creation(request, token):
                 request, _("Employee personal details created successfully..")
             )
             return redirect("employee-bank-details", token)
-    onboarding_portal.count += 1
-    onboarding_portal.save()
     return render(
         request,
         "onboarding/employee_creation.html",
@@ -1066,13 +1102,12 @@ def employee_bank_details(request, token):
     onboarding_portal = OnboardingPortal.objects.get(token=token)
     user = User.objects.filter(username=onboarding_portal.candidate_id.email).first()
     employee = Employee.objects.filter(employee_user_id=user).first()
-    form = BankDetailsCreationForm(
-        instance=EmployeeBankDetails.objects.filter(employee_id=employee).first()
-    )
+    bank_info = EmployeeBankDetails.objects.filter(employee_id=employee).first()
+    form = BankDetailsCreationForm(instance=bank_info)
     if request.method == "POST":
         form = BankDetailsCreationForm(
             request.POST,
-            instance=EmployeeBankDetails.objects.filter(employee_id=employee).first(),
+            instance=bank_info,
         )
         if form.is_valid():
             return employee_bank_details_save(form, request, onboarding_portal)
@@ -1100,11 +1135,14 @@ def employee_bank_details_save(form, request, onboarding_portal):
     GET : return welcome onboard view
     """
     employee_bank_detail = form.save(commit=False)
-    employee_bank_detail.employee_id = Employee.objects.get(
-        employee_user_id=request.user
-    )
+    employee = Employee.objects.get(employee_user_id=request.user)
+    employee_bank_detail.employee_id = employee
+    candidate = onboarding_portal.candidate_id
+    candidate.converted_employee_id = employee
+    candidate.save()
     employee_bank_detail.save()
     onboarding_portal.count = 4
+    onboarding_portal.used = True
     onboarding_portal.save()
     messages.success(request, _("Employee bank details created successfully.."))
     return redirect(welcome_aboard)
@@ -1164,7 +1202,7 @@ def candidate_task_update(request, taskId):
         verb_es=f"La tarea {candidate_task.onboarding_task_id} del candidato {candidate_task.candidate_id} se ha actualizado a {candidate_task.status}.",
         verb_fr=f"La tâche {candidate_task.onboarding_task_id} du candidat {candidate_task.candidate_id} a été mise à jour à {candidate_task.status}.",
         icon="people-circle",
-        redirect="/onboarding/onboarding-view",
+        redirect=reverse("onboarding-view"),
     )
     return JsonResponse(
         {"message": _("Candidate onboarding task updated"), "type": "success"}
@@ -1285,7 +1323,7 @@ def candidate_stage_update(request, candidate_id, recruitment_id):
             verb_es=f"La etapa del candidato {candidate_stage.candidate_id} se ha actualizado a {candidate_stage.onboarding_stage_id}.",
             verb_fr=f"L'étape du candidat {candidate_stage.candidate_id} a été mise à jour à {candidate_stage.onboarding_stage_id}.",
             icon="people-circle",
-            redirect="/onboarding/onboarding-view",
+            redirect=reverse("onboarding-view"),
         )
     groups = onboarding_query_grouper(request, recruitments)
     for item in groups:
@@ -1570,6 +1608,7 @@ def stage_name_update(request, stage_id):
 
 
 @login_required
+@hx_request_required
 @stage_manager_can_enter("recruitment.change_candidate")
 def onboarding_send_mail(request, candidate_id):
     """
@@ -1588,7 +1627,7 @@ def onboarding_send_mail(request, candidate_id):
             res = send_mail(
                 subject,
                 body,
-                email_backend.dynamic_username_with_display_name,
+                email_backend.dynamic_from_email_with_display_name,
                 [candidate_mail],
                 fail_silently=False,
             )
@@ -1616,6 +1655,7 @@ def update_probation_end(request):
 
 
 @login_required
+@hx_request_required
 @all_manager_can_enter("onboarding.change_onboardingtask")
 def task_report(request):
     """
@@ -1697,6 +1737,7 @@ def update_offer_letter_status(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("recruitment.add_rejectedcandidate")
 def add_to_rejected_candidates(request):
     """

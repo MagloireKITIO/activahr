@@ -16,16 +16,22 @@ from django.contrib import messages
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse, QueryDict
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 
 import payroll.models.models
 from asset.models import Asset
-from attendance.methods.group_by import group_by_queryset
 from base.backends import ConfiguredEmailBackend
 from base.methods import closest_numbers, filter_own_records, get_key_instances, sortby
 from base.models import Company
 from employee.models import Employee, EmployeeWorkInformation
-from horilla.decorators import login_required, owner_can_enter, permission_required
+from horilla.decorators import (
+    hx_request_required,
+    login_required,
+    owner_can_enter,
+    permission_required,
+)
+from horilla.group_by import group_by_queryset
 from leave.models import AvailableLeave
 from notifications.signals import notify
 from payroll.filters import (
@@ -269,6 +275,7 @@ def view_allowance(request):
 
 
 @login_required
+@hx_request_required
 def view_single_allowance(request, allowance_id):
     """
     This method is used render template to view the selected allowance instances
@@ -292,6 +299,7 @@ def view_single_allowance(request, allowance_id):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.view_allowance")
 def filter_allowance(request):
     """
@@ -341,6 +349,7 @@ def update_allowance(request, allowance_id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.delete_allowance")
 def delete_allowance(request, allowance_id):
     """
@@ -363,7 +372,10 @@ def delete_allowance(request, allowance_id):
     except Exception as exception:
         messages.error(request, _("An error occurred while deleting the allowance"))
         messages.error(request, str(exception))
-    if request.path.split("/")[2] == "delete-employee-allowance":
+    if (
+        request.path.split("/")[2] == "delete-employee-allowance"
+        or not payroll.models.models.Allowance.objects.filter()
+    ):
         return HttpResponse("<script>window.location.reload();</script>")
     return redirect(filter_allowance)
 
@@ -409,6 +421,7 @@ def view_deduction(request):
 
 
 @login_required
+@hx_request_required
 def view_single_deduction(request, deduction_id):
     """
     This method is used render template to view all the deduction instances
@@ -457,6 +470,7 @@ def view_single_deduction(request, deduction_id):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.view_allowance")
 def filter_deduction(request):
     """
@@ -504,6 +518,7 @@ def update_deduction(request, deduction_id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.delete_deduction")
 def delete_deduction(request, deduction_id, emp_id=None):
     instances_ids = request.GET.get("instances_ids")
@@ -527,12 +542,18 @@ def delete_deduction(request, deduction_id, emp_id=None):
     }
     http_hx_target = request.META.get("HTTP_HX_TARGET")
     redirected_path = paths.get(http_hx_target)
-    if http_hx_target and redirected_path:
-        return redirect(redirected_path)
-
-    return HttpResponseRedirect(
+    if http_hx_target:
+        if (
+            http_hx_target == "payroll-deduction-container"
+            and not Deduction.objects.filter()
+        ):
+            return HttpResponse("<script>window.location.reload();</script>")
+        if redirected_path:
+            return redirect(redirected_path)
+    default_redirect = (
         request.path if http_hx_target else request.META.get("HTTP_REFERER", "/")
     )
+    return HttpResponseRedirect(default_redirect)
 
 
 @login_required
@@ -589,7 +610,9 @@ def generate_payslip(request):
                     verb_de="Gehaltsabrechnung wurde für Sie erstellt.",
                     verb_es="Se ha generado la nómina para usted.",
                     verb_fr="La fiche de paie a été générée pour vous.",
-                    redirect=f"/payroll/view-payslip/{instance.id}",
+                    redirect=reverse(
+                        "view-created-payslip", kwargs={"payslip_id": instance.id}
+                    ),
                     icon="close",
                 )
             messages.success(request, f"{employees.count()} payslip saved as draft")
@@ -667,7 +690,9 @@ def create_payslip(request, new_post_data=None):
                     verb_de="Gehaltsabrechnung wurde für Sie erstellt.",
                     verb_es="Se ha generado la nómina para usted.",
                     verb_fr="La fiche de paie a été générée pour vous.",
-                    redirect=f"/payroll/view-payslip/{payslip.pk}",
+                    redirect=reverse(
+                        "view-created-payslip", kwargs={"payslip_id": payslip.pk}
+                    ),
                     icon="close",
                 )
                 return render(
@@ -779,6 +804,7 @@ def view_payslip(request):
 
 
 @login_required
+@hx_request_required
 def filter_payslip(request):
     """
     Filter and retrieve a list of payslips based on the provided query parameters.
@@ -948,10 +974,13 @@ def send_slip(request):
     payslip_ids = request.GET.getlist("id")
     payslips = Payslip.objects.filter(id__in=payslip_ids)
     if not getattr(
-        email_backend, "dynamic_username_with_display_name", None
-    ) or not len(email_backend.dynamic_username_with_display_name):
+        email_backend, "dynamic_from_email_with_display_name", None
+    ) or not len(email_backend.dynamic_from_email_with_display_name):
         messages.error(request, "Email server is not configured")
-        return redirect(f"view-payslip/{payslips[0].id}/" if view else filter_payslip)
+        if view:
+            return HttpResponse("<script>window.location.reload()</script>")
+        else:
+            return redirect(filter_payslip)
 
     result_dict = defaultdict(
         lambda: {"employee_id": None, "instances": [], "count": 0}
@@ -964,7 +993,10 @@ def send_slip(request):
     mail_thread = MailSendThread(request, result_dict=result_dict, ids=payslip_ids)
     mail_thread.start()
     messages.info(request, "Mail processing")
-    return redirect(f"view-payslip/{payslips[0].id}/" if view else filter_payslip)
+    if view:
+        return HttpResponse("<script>window.location.reload()</script>")
+    else:
+        return redirect(filter_payslip)
 
 
 @login_required
@@ -1114,6 +1146,7 @@ def view_loans(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.add_loanaccount")
 def create_loan(request):
     """
@@ -1177,6 +1210,7 @@ def delete_loan(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("payroll.view_loanaccount")
 def search_loan(request):
     """
@@ -1238,6 +1272,7 @@ def asset_fine(request):
             instance.asset_id = asset
             instance.save()
             messages.success(request, "Asset fine added")
+            return HttpResponse("<script>window.location.reload()</script>")
     return render(
         request,
         "payroll/asset_fine/form.html",
@@ -1289,6 +1324,7 @@ def view_reimbursement(request):
 
 
 @login_required
+@hx_request_required
 def create_reimbursement(request):
     """
     This method is used to create reimbursement
@@ -1308,6 +1344,7 @@ def create_reimbursement(request):
 
 
 @login_required
+@hx_request_required
 def search_reimbursement(request):
     """
     This method is used to search/filter reimbursement
@@ -1418,7 +1455,7 @@ def approve_reimbursements(request):
                 verb_de="Ihr Erstattungsantrag wurde abgelehnt.",
                 verb_es="Su solicitud de reembolso ha sido rechazada.",
                 verb_fr="Votre demande de remboursement a été rejetée.",
-                redirect=f"/payroll/view-reimbursement?id={reimbursement.id}",
+                redirect=reverse("view-reimbursement") + f"?id={reimbursement.id}",
                 icon="checkmark",
             )
         else:
@@ -1430,7 +1467,7 @@ def approve_reimbursements(request):
                 verb_de="Ihr Rückerstattungsantrag wurde genehmigt.",
                 verb_es="Se ha aprobado tu solicitud de reembolso.",
                 verb_fr="Votre demande de remboursement a été approuvée.",
-                redirect=f"/payroll/view-reimbursement?id={reimbursement.id}",
+                redirect=reverse("view-reimbursement") + f"?id={reimbursement.id}",
                 icon="checkmark",
             )
     return redirect(view_reimbursement)
@@ -1446,8 +1483,8 @@ def delete_reimbursements(request):
     reimbursements = Reimbursement.objects.filter(id__in=ids)
     for reimbursement in reimbursements:
         user = reimbursement.employee_id.employee_user_id
-        reimbursement.delete()
-    # messages.success(request, "Reimbursements deleted")
+    reimbursements.delete()
+    messages.success(request, "Reimbursements deleted")
     notify.send(
         request.user.employee_get,
         recipient=user,

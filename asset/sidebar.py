@@ -12,12 +12,12 @@ SUBMENUS = [
     {
         "menu": trans("Dashboard"),
         "redirect": reverse("asset-dashboard"),
-        "accessability": "asset.sidebar.dashboard_accessability",
+        "accessibility": "asset.sidebar.dashboard_accessibility",
     },
     {
         "menu": trans("Asset View"),
         "redirect": reverse("asset-category-view"),
-        "accessability": "asset.sidebar.dashboard_accessability",
+        "accessibility": "asset.sidebar.dashboard_accessibility",
     },
     {
         "menu": trans("Request and Allocation"),
@@ -30,5 +30,9 @@ SUBMENUS = [
 ]
 
 
-def dashboard_accessability(request, submenu, user_perms, *args, **kwargs):
+def dashboard_accessibility(request, submenu, user_perms, *args, **kwargs):
+    """
+    Determine if the user has the necessary permissions to access the
+    dashboard and asset category view.
+    """
     return request.user.has_perm("asset.view_assetcategory")

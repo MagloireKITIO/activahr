@@ -18,7 +18,6 @@ from attendance.filters import (
     LateComeEarlyOutFilter,
 )
 from attendance.forms import AttendanceOverTimeForm
-from attendance.methods.group_by import group_by_queryset
 from attendance.models import (
     Attendance,
     AttendanceActivity,
@@ -29,9 +28,11 @@ from attendance.models import (
 from attendance.views.views import paginator_qry, strtime_seconds
 from base.methods import filtersubordinates, get_key_instances, sortby
 from horilla.decorators import hx_request_required, login_required, manager_can_enter
+from horilla.group_by import group_by_queryset
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("attendance.view_attendance")
 def attendance_search(request):
     """
@@ -207,6 +208,7 @@ def attendance_overtime_search(request):
 
 
 @login_required
+@hx_request_required
 def attendance_activity_search(request):
     """
     This method is used to search attendance activity
@@ -263,6 +265,7 @@ def attendance_activity_search(request):
 
 
 @login_required
+@hx_request_required
 def late_come_early_out_search(request):
     """
     This method is used to search late come early out by employee.
@@ -378,6 +381,7 @@ def filter_own_attendance(request):
 
 
 @login_required
+@hx_request_required
 def own_attendance_sort(request):
     """
     This method is used to sort out attendances
@@ -396,6 +400,7 @@ def own_attendance_sort(request):
 
 
 @login_required
+@hx_request_required
 def search_attendance_requests(request):
     field = request.GET.get("field")
     all_attendance = Attendance.objects.all()

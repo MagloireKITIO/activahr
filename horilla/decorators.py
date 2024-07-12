@@ -12,6 +12,7 @@ from base.models import BiometricAttendance, MultipleApprovalManagers
 from employee.models import Employee, EmployeeWorkInformation
 from horilla import settings
 from horilla.settings import BASE_DIR, TEMPLATES
+from recruitment.models import Recruitment
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +105,9 @@ def duplicate_permission(function):
 
         app_label = kwargs["model"]._meta.app_label
         model_name = kwargs["model"]._meta.model_name
-        obj_id = kwargs["obj_id"]
-        object_instance = kwargs["model"].objects.filter(pk=obj_id).first()
         try:
+            obj_id = kwargs["obj_id"]
+            object_instance = kwargs["model"].objects.filter(pk=obj_id).first()
             if object_instance.employee_id == employee:
                 return function(request, *args, **kwargs)
         except:
@@ -171,6 +172,42 @@ def manager_can_enter(function, perm):
     return _function
 
 
+@decorator_with_arguments
+def is_recruitment_manager(function, perm):
+    """
+    This method is used to check permission to employee for enter to the function if the employee
+    do not have permission also checks, has manager of any recruitment.
+    """
+
+    def _function(request, *args, **kwargs):
+
+        user = request.user
+        perm = "recruitment.view_recruitmentsurvey"
+        employee = user.employee_get
+        is_manager = False
+        recs = Recruitment.objects.all()
+        for i in recs:
+            for manager in i.recruitment_managers.all():
+                if request.user.employee_get == manager:
+                    is_manager = True
+
+        if user.has_perm(perm) or is_manager:
+            return function(request, *args, **kwargs)
+        else:
+            messages.info(request, "You dont have permission.")
+            previous_url = request.META.get("HTTP_REFERER", "/")
+            script = f'<script>window.location.href = "{previous_url}"</script>'
+            key = "HTTP_HX_REQUEST"
+            if key in request.META.keys():
+                return render(request, "decorator_404.html")
+            return HttpResponse(script)
+
+    return _function
+
+
+from urllib.parse import urlparse
+
+
 def login_required(view_func):
     def wrapped_view(request, *args, **kwargs):
         path = request.path
@@ -190,7 +227,17 @@ def login_required(view_func):
         try:
             func = view_func(request, *args, **kwargs)
         except Exception as e:
-            logger.exception(e)
+            logger.error(e)
+            if (
+                "notifications_notification" in str(e)
+                and request.headers.get("X-Requested-With") != "XMLHttpRequest"
+            ):
+                referer = request.META.get("HTTP_REFERER", "/")
+                messages.warning(request, str(e))
+                return HttpResponse(
+                    f"<script>window.location.href ='{str(referer)}'</script>"
+                )
+
             if not settings.DEBUG:
                 return render(request, "went_wrong.html")
             return view_func(request, *args, **kwargs)
@@ -203,7 +250,7 @@ def hx_request_required(view_func):
     def wrapped_view(request, *args, **kwargs):
         key = "HTTP_HX_REQUEST"
         if key not in request.META.keys():
-            return HttpResponse("method not allowed...")
+            return render(request, "405.html")
         return view_func(request, *args, **kwargs)
 
     return wrapped_view
@@ -221,7 +268,11 @@ def owner_can_enter(function, perm: str, model: object, manager_access=False):
         if model == Employee:
             employee = Employee.objects.get(id=instance_id)
         else:
-            employee = model.objects.get(id=instance_id).employee_id
+            try:
+                employee = model.objects.get(id=instance_id).employee_id
+            except:
+                messages.error(request, ("Sorry, something went wrong!"))
+                return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
         can_enter = (
             request.user.employee_get == employee
             or request.user.has_perm(perm)

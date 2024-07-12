@@ -6,7 +6,10 @@
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Employee Onboarding - Horilla Dashboard</title>
+    <title>Employee Onboarding - {{white_label_company_name}} Dashboard</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="{% if white_label_company.icon %}{{white_label_company.icon.url}} {% else %}{% static 'favicons/apple-touch-icon.png' %}{% endif %}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{% if white_label_company.icon %}{{white_label_company.icon.url}} {% else %}{% static 'favicons/favicon-32x32.png' %}{% endif %}">
+    <link rel="icon" type="image/png" sizes="16x16" href="{% if white_label_company.icon %}{{white_label_company.icon.url}} {% else %}{% static 'favicons/favicon-16x16.png' %}{% endif %}">
     <link rel="stylesheet" href="{% static 'build/css/style.min.css' %}" />
 </head>
 
@@ -52,9 +55,14 @@
 
                     <form>
                         <div class="oh-input-group w-100 d-flex justify-content-center">
+
                             <div class="oh-profile-section__edit-photo me-4 mb-3" data-toggle="oh-modal-toggle"
                                 data-target="#uploadPhotoModal">
-                                <img src="{{candidate.get_avatar}}" class="oh-profile-section__avatar" alt="{{candidate.name}}"/>
+                                {% if profile %}
+                                    <img src="{{profile.url}}" class="oh-profile-section__avatar" alt="{{candidate.name}}"/>
+                                {% else %}
+                                    <img src="{{candidate.get_avatar}}" class="oh-profile-section__avatar" alt="{{candidate.name}}"/>
+                                {% endif %}
                             </div>
                         </div>
                         <h2 class="oh-onboarding-card__greeting text-center">Welcome Aboard</h2>

@@ -32,10 +32,10 @@ from django.forms import DateInput, ValidationError
 from django.template.loader import render_to_string
 from django.utils.translation import gettext_lazy as _
 
-from base import thread_local_middleware
 from base.methods import reload_queryset
 from employee.filters import EmployeeFilter
 from employee.models import Employee, EmployeeBankDetails
+from horilla import horilla_middlewares
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
 from onboarding.models import CandidateTask, OnboardingStage, OnboardingTask
@@ -49,7 +49,7 @@ class ModelForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         reload_queryset(self.fields)
         for _, field in self.fields.items():
             widget = field.widget
@@ -370,7 +370,7 @@ class EmployeeCreationForm(ModelForm):
     zip = forms.CharField(required=True, label=_("Zip"))
     qualification = forms.CharField(required=True, label=_("Qualification"))
     experience = forms.IntegerField(required=True, label=_("Experience"))
-    children = forms.CharField(required=True, label=_("Childrens"))
+    children = forms.IntegerField(required=True, label=_("Childrens"))
     emergency_contact = forms.CharField(
         required=True, label=_("Emergency Contact Number")
     )
@@ -398,6 +398,19 @@ class EmployeeCreationForm(ModelForm):
         widgets = {
             "dob": DateInput(attrs={"type": "date"}),
         }
+
+    def clean(self):
+        cleaned_data = self.cleaned_data
+        if cleaned_data["experience"] and cleaned_data["experience"] < 0:
+            raise ValidationError(
+                {"experience": _("Experience should be a postive integier")}
+            )
+        if cleaned_data["children"] and cleaned_data["children"] < 0:
+            raise ValidationError(
+                {"children": _("No of children should be a postive integier")}
+            )
+
+        return super().clean()
 
 
 class BankDetailsCreationForm(ModelForm):

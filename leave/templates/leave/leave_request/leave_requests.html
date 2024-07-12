@@ -86,8 +86,8 @@
                   <div class="oh-sticky-table__th {% if request.sort_option.order == '-status' %}arrow-up {% elif request.sort_option.order == 'status' %}arrow-down {% else %}arrow-up-down {% endif %}" hx-get="{% url 'request-filter' %}?{{pd}}&sortby=status" hx-target="#leaveRequest" >{% trans "Status" %}</div>
                   {% if  not dashboard %}
                       <div class="oh-sticky-table__th" style="width:115px;">{% trans "Comment" %}</div>
-                      {% if request.user|is_reportingmanager or perms.leave.chanage_leaverequest or perms.leave.delete_leaverequest or request.user|is_leave_approval_manager %}
-                      <div class="oh-sticky-table__th" style="width:200px">{% trans "Actions" %}</div>
+                      {% if request.user|is_reportingmanager or perms.leave.change_leaverequest or perms.leave.delete_leaverequest or request.user|is_leave_approval_manager %}
+                        <div class="oh-sticky-table__th" style="width:200px">{% trans "Actions" %}</div>
                       {% endif %}
                       <div class="oh-sticky-table__th" >{% trans "Penalties" %}</div>
                       <div class="oh-sticky-table__th oh-sticky-table__right">{% trans "Confirmation" %}</div>
@@ -225,7 +225,7 @@
                         </a>
                       {% endif %}
                     {% else %}
-                      {% if leave_request.is_approved and leave_request.status == 'requested' and leave_request.end_date >= current_date %}
+                      {% if leave_request.is_approved and leave_request.status == 'requested' %}
                         <a href="{% url 'request-approve' leave_request.id %}" title="{% trans 'Approve' %}"
                             class="oh-btn oh-btn--success w-100" {% if leave_request.end_date.month > current_date.month %} onclick = "leaveRequestConfirm('This leave request is for the month of {{leave_request.start_date|date:'F'}}. Approval depends on the {{leave_request.employee_id.get_full_name}} having available leave days for this month.',event);" {% else %}  onclick = "return confirm('Do You really want to Approve this request?')"; {% endif %}>
                             <ion-icon class="me-1" name="checkmark-outline"></ion-icon>

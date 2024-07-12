@@ -17,7 +17,7 @@ from django.template.defaultfilters import register
 from attendance.models import AttendanceValidationCondition
 from attendance.views.views import strtime_seconds
 from base.models import EmployeeShiftSchedule
-from base.thread_local_middleware import _thread_locals
+from horilla.horilla_middlewares import _thread_locals
 
 register = template.Library()
 
@@ -241,19 +241,3 @@ def get_item(list, i):
         return list[i]
     except:
         return None
-
-
-@register.filter(name="shift_exists")
-def shift_exists(employee, date):
-    request = getattr(_thread_locals, "request", None)
-    if not getattr(request, "schedules", None):
-        schedules = EmployeeShiftSchedule.objects.all()
-        setattr(request, "schedules", schedules)
-
-    try:
-        day = date.strftime("%A").lower()
-        shift = employee.employee_work_info.shift_id
-        schedule = request.schedules.get(shift_id=shift, day__day=day)
-        return False if schedule.minimum_working_hour == "00:00" else True
-    except:
-        return False

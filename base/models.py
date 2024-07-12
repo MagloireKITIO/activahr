@@ -4,6 +4,8 @@ models.py
 This module is used to register django models
 """
 
+from typing import Iterable
+
 import django
 from django.contrib import messages
 from django.contrib.auth.models import User
@@ -12,7 +14,8 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from base.horilla_company_manager import HorillaCompanyManager
-from base.thread_local_middleware import _thread_locals
+from horilla import horilla_middlewares
+from horilla.horilla_middlewares import _thread_locals
 from horilla.models import HorillaModel
 from horilla_audit.models import HorillaAuditInfo, HorillaAuditLog
 
@@ -119,7 +122,7 @@ class JobPosition(HorillaModel):
     JobPosition model
     """
 
-    job_position = models.CharField(max_length=50, blank=False, null=False, unique=True)
+    job_position = models.CharField(max_length=50, blank=False, null=False)
     department_id = models.ForeignKey(
         Department,
         on_delete=models.PROTECT,
@@ -139,7 +142,7 @@ class JobPosition(HorillaModel):
         verbose_name_plural = _("Job Positions")
 
     def __str__(self):
-        return str(self.job_position)
+        return str(self.job_position + " - (" + self.department_id.department) + ")"
 
 
 class JobRole(HorillaModel):
@@ -230,6 +233,11 @@ class RotatingWorkType(HorillaModel):
         through="RotatingWorkTypeAssign",
         verbose_name=_("Employee"),
     )
+    additional_data = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+    )
     objects = HorillaCompanyManager("employee_id__employee_work_info__company_id")
 
     class Meta:
@@ -245,7 +253,45 @@ class RotatingWorkType(HorillaModel):
 
     def clean(self):
         if self.work_type1 == self.work_type2:
-            raise ValidationError(_("Choose different work type"))
+            raise ValidationError(_("Select different work type continuously"))
+
+        additional_work_types = (
+            self.additional_data.get("additional_work_types", [])
+            if self.additional_data
+            else []
+        )
+
+        if (
+            additional_work_types
+            and str(self.work_type2.id) == additional_work_types[0]
+        ):
+            raise ValidationError(_("Select different work type continuously"))
+
+        if (
+            additional_work_types
+            and str(self.work_type1.id) == additional_work_types[-1]
+        ):
+            raise ValidationError(_("Select different work type continuously"))
+
+        for i in range(len(additional_work_types) - 1):
+            if additional_work_types[i] and additional_work_types[i + 1]:
+                if additional_work_types[i] == additional_work_types[i + 1]:
+                    raise ValidationError(_("Select different work type continuously"))
+
+    def additional_work_types(self):
+        rotating_work_type = RotatingWorkType.objects.get(id=self.pk)
+        additional_data = rotating_work_type.additional_data
+        if additional_data:
+            additional_work_type_ids = additional_data.get("additional_work_types")
+            if additional_work_type_ids:
+                additional_work_types = WorkType.objects.filter(
+                    id__in=additional_work_type_ids
+                )
+            else:
+                additional_work_types = None
+        else:
+            additional_work_types = None
+        return additional_work_types
 
 
 DAY_DATE = [(str(i), str(i)) for i in range(1, 32)]
@@ -322,7 +368,11 @@ class RotatingWorkTypeAssign(HorillaModel):
         choices=DAY_DATE,
         verbose_name=_("Rotate Every Month"),
     )
-
+    additional_data = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+    )
     history = HorillaAuditLog(
         related_name="history_set",
         bases=[
@@ -487,6 +537,9 @@ class EmployeeShift(HorillaModel):
         return self
 
 
+from django.db.models import Case, When
+
+
 class EmployeeShiftSchedule(HorillaModel):
     """
     EmployeeShiftSchedule model
@@ -516,6 +569,18 @@ class EmployeeShiftSchedule(HorillaModel):
         verbose_name = _("Employee Shift Schedule")
         verbose_name_plural = _("Employee Shift Schedules")
         unique_together = [["shift_id", "day"]]
+        ordering = [
+            Case(
+                When(day__day="monday", then=0),
+                When(day__day="tuesday", then=1),
+                When(day__day="wednesday", then=2),
+                When(day__day="thursday", then=3),
+                When(day__day="friday", then=4),
+                When(day__day="saturday", then=5),
+                When(day__day="sunday", then=6),
+                default=7,
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.shift_id.employee_shift} {self.day}"
@@ -547,6 +612,11 @@ class RotatingShift(HorillaModel):
         on_delete=models.PROTECT,
         verbose_name=_("Shift 2"),
     )
+    additional_data = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+    )
     objects = HorillaCompanyManager("employee_id__employee_work_info__company_id")
 
     class Meta:
@@ -562,7 +632,39 @@ class RotatingShift(HorillaModel):
 
     def clean(self):
         if self.shift1 == self.shift2:
-            raise ValidationError(_("Choose different shifts"))
+            raise ValidationError(_("Select different shift continuously"))
+
+        additional_shifts = (
+            self.additional_data.get("additional_shifts", [])
+            if self.additional_data
+            else []
+        )
+
+        if additional_shifts and str(self.shift2.id) == additional_shifts[0]:
+            raise ValidationError(_("Select different shift continuously"))
+
+        if additional_shifts and str(self.shift1.id) == additional_shifts[-1]:
+            raise ValidationError(_("Select different shift continuously"))
+
+        for i in range(len(additional_shifts) - 1):
+            if additional_shifts[i] and additional_shifts[i + 1]:
+                if additional_shifts[i] == additional_shifts[i + 1]:
+                    raise ValidationError(_("Select different shift continuously"))
+
+    def additional_shifts(self):
+        rotating_shift = RotatingShift.objects.get(id=self.pk)
+        additional_data = rotating_shift.additional_data
+        if additional_data:
+            additional_shift_ids = additional_data.get("additional_shifts")
+            if additional_shift_ids:
+                additional_shifts = EmployeeShift.objects.filter(
+                    id__in=additional_shift_ids
+                )
+            else:
+                additional_shifts = None
+        else:
+            additional_shifts = None
+        return additional_shifts
 
 
 class RotatingShiftAssign(HorillaModel):
@@ -620,6 +722,11 @@ class RotatingShiftAssign(HorillaModel):
         choices=DAY_DATE,
         verbose_name=_("Rotate Every Month"),
     )
+    additional_data = models.JSONField(
+        default=dict,
+        blank=True,
+        null=True,
+    )
     history = HorillaAuditLog(
         related_name="history_set",
         bases=[
@@ -638,10 +745,10 @@ class RotatingShiftAssign(HorillaModel):
         ordering = ["-next_change_date", "-employee_id__employee_first_name"]
 
     def clean(self):
-        if self.is_active and self.employee_id is not None:
+        if self.is_active and self.employee_id_id is not None:
             # Check if any other active record with the same parent already exists
             siblings = RotatingShiftAssign.objects.filter(
-                is_active=True, employee_id=self.employee_id
+                is_active=True, employee_id__id=self.employee_id_id
             )
             if siblings.exists() and siblings.first().id != self.id:
                 raise ValidationError(_("Only one active record allowed per employee"))
@@ -765,8 +872,10 @@ class WorkTypeRequest(HorillaModel):
         return False
 
     def clean(self):
-        if self.requested_date < django.utils.timezone.now().date():
-            raise ValidationError(_("Date must be greater than or equal to today"))
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
+        if not request.user.is_superuser:
+            if self.requested_date < django.utils.timezone.now().date():
+                raise ValidationError(_("Date must be greater than or equal to today"))
         if self.requested_till and self.requested_till < self.requested_date:
             raise ValidationError(
                 _("End date must be greater than or equal to start date")
@@ -778,6 +887,13 @@ class WorkTypeRequest(HorillaModel):
         if not self.is_permanent_work_type:
             if not self.requested_till:
                 raise ValidationError(_("Requested till field is required."))
+
+    def request_status(self):
+        return (
+            _("Rejected")
+            if self.canceled
+            else (_("Approved") if self.approved else _("Requested"))
+        )
 
     def __str__(self) -> str:
         return f"{self.employee_id.employee_first_name} \
@@ -874,8 +990,11 @@ class ShiftRequest(HorillaModel):
         ]
 
     def clean(self):
-        if not self.pk and self.requested_date < django.utils.timezone.now().date():
-            raise ValidationError(_("Date must be greater than or equal to today"))
+
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
+        if not request.user.is_superuser:
+            if not self.pk and self.requested_date < django.utils.timezone.now().date():
+                raise ValidationError(_("Date must be greater than or equal to today"))
         if self.requested_till and self.requested_till < self.requested_date:
             raise ValidationError(
                 _("End date must be greater than or equal to start date")
@@ -978,10 +1097,6 @@ class DynamicEmailConfiguration(HorillaModel):
     SingletonModel to keep the mail server configurations
     """
 
-    is_primary = models.BooleanField(
-        default=False, verbose_name=_("Primary Mail Server")
-    )
-
     host = models.CharField(null=True, max_length=256, verbose_name=_("Email Host"))
 
     port = models.SmallIntegerField(null=True, verbose_name=_("Email Port"))
@@ -1013,6 +1128,10 @@ class DynamicEmailConfiguration(HorillaModel):
     use_ssl = models.BooleanField(default=False, verbose_name=_("Use SSL"))
 
     fail_silently = models.BooleanField(default=False, verbose_name=_("Fail Silently"))
+
+    is_primary = models.BooleanField(
+        default=False, verbose_name=_("Primary Mail Server")
+    )
 
     timeout = models.SmallIntegerField(
         null=True, verbose_name=_("Email Send Timeout (seconds)")
@@ -1338,6 +1457,7 @@ class EmailLog(models.Model):
     to = models.EmailField()
     status = models.CharField(max_length=6, choices=statuses)
     created_at = models.DateTimeField(auto_now_add=True)
+    objects = models.Manager()
     company_id = models.ForeignKey(
         Company, on_delete=models.CASCADE, null=True, editable=False
     )
@@ -1382,6 +1502,28 @@ class BiometricAttendance(models.Model):
         on_delete=models.PROTECT,
         related_name="biometric_enabled_company",
     )
+    objects = models.Manager()
 
     def __str__(self):
         return f"{self.is_installed}"
+
+
+def default_additional_data():
+    return {"allowed_ips": []}
+
+
+class AttendanceAllowedIP(models.Model):
+    """
+    Represents client IP addresses that are allowed to mark attendance.
+    Usage:
+        - This model is used to store IP addresses that are permitted to access the attendance system.
+        - It ensures that only authorized IP addresses can mark attendance.
+    """
+
+    is_enabled = models.BooleanField(default=False)
+    additional_data = models.JSONField(
+        null=True, blank=True, default=default_additional_data
+    )
+
+    def __str__(self):
+        return f"AttendanceAllowedIP - {self.is_enabled}"

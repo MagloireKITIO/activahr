@@ -21,6 +21,7 @@ class YourForm(forms.Form):
         pass
 """
 
+import logging
 import uuid
 from ast import Dict
 from datetime import date, datetime
@@ -31,14 +32,14 @@ from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.template.loader import render_to_string
 from django.utils.translation import gettext_lazy as _
 
-from base import thread_local_middleware
 from base.forms import Form
 from base.methods import reload_queryset
 from employee.filters import EmployeeFilter
 from employee.models import Employee
-from horilla.decorators import logger
+from horilla import horilla_middlewares
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
+from leave.models import LeaveRequest
 from recruitment import widgets
 from recruitment.models import (
     Candidate,
@@ -49,6 +50,8 @@ from recruitment.models import (
     RecruitmentSurvey,
     RejectedCandidate,
     RejectReason,
+    Resume,
+    Skill,
     SkillZone,
     SkillZoneCandidate,
     Stage,
@@ -56,6 +59,8 @@ from recruitment.models import (
     StageNote,
     SurveyTemplate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelForm(forms.ModelForm):
@@ -65,7 +70,7 @@ class ModelForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         reload_queryset(self.fields)
         for field_name, field in self.fields.items():
             widget = field.widget
@@ -254,6 +259,7 @@ class RecruitmentCreationForm(ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         reload_queryset(self.fields)
         if not self.instance.pk:
             self.fields["recruitment_managers"] = HorillaMultiSelectField(
@@ -268,11 +274,31 @@ class RecruitmentCreationForm(ModelForm):
                 label="Employee",
             )
 
+        skill_choices = [("", _("---Choose Skills---"))] + list(
+            self.fields["skills"].queryset.values_list("id", "title")
+        )
+        self.fields["skills"].choices = skill_choices
+        self.fields["skills"].choices += [("create", _("Create new skill "))]
+
+    # def create_option(self, *args,**kwargs):
+    #     option = super().create_option(*args,**kwargs)
+
+    #     if option.get('value') == "create":
+    #         option['attrs']['class'] = 'text-danger'
+
+    #     return option
+
     def clean(self):
         if isinstance(self.fields["recruitment_managers"], HorillaMultiSelectField):
             ids = self.data.getlist("recruitment_managers")
             if ids:
                 self.errors.pop("recruitment_managers", None)
+        open_positions = self.cleaned_data.get("open_positions")
+        is_published = self.cleaned_data.get("is_published")
+        if is_published and not open_positions:
+            raise forms.ValidationError(
+                _("Job position is required if the recruitment is publishing.")
+            )
         super().clean()
 
 
@@ -341,16 +367,27 @@ class CandidateCreationForm(ModelForm):
         """
 
         model = Candidate
-        fields = "__all__"
-        exclude = [
-            "confirmation",
-            "scheduled_for",
-            "schedule_date",
-            "joining_date",
-            "sequence",
-            "stage_id",
-            "offerletter_status",
+        fields = [
+            "profile",
+            "name",
+            "portfolio",
+            "email",
+            "mobile",
+            "recruitment_id",
+            "job_position_id",
+            "dob",
+            "gender",
+            "address",
+            "source",
+            "country",
+            "state",
+            "zip",
+            "resume",
+            "referral",
+            "canceled",
+            "is_active",
         ]
+
         widgets = {
             "scheduled_date": forms.DateInput(attrs={"type": "date"}),
             "dob": forms.DateInput(attrs={"type": "date"}),
@@ -381,6 +418,16 @@ class CandidateCreationForm(ModelForm):
             self.instance.job_position_id = job_position
         return super().save(commit)
 
+    def as_p(self, *args, **kwargs):
+        """
+        Render the form fields as HTML table rows with Bootstrap styling.
+        """
+        context = {"form": self}
+        table_html = render_to_string(
+            "candidate/candidate_create_form_as_p.html", context
+        )
+        return table_html
+
     def clean(self):
         if self.instance.name is not None:
             self.errors.pop("job_position_id", None)
@@ -397,6 +444,9 @@ class CandidateCreationForm(ModelForm):
             ):
                 raise forms.ValidationError({"job_position_id": "Choose valid choice"})
         return super().clean()
+
+
+from horilla.horilla_middlewares import _thread_locals
 
 
 class ApplicationForm(RegistrationForm):
@@ -444,8 +494,23 @@ class ApplicationForm(RegistrationForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        request = getattr(_thread_locals, "request", None)
+
         self.fields["recruitment_id"].widget.attrs = {"data-widget": "ajax-widget"}
         self.fields["job_position_id"].widget.attrs = {"data-widget": "ajax-widget"}
+        if request and request.user.has_perm("recruitment.add_candidate"):
+            self.fields["profile"].required = False
+
+    def clean(self, *args, **kwargs):
+        name = self.cleaned_data["name"]
+        request = getattr(_thread_locals, "request", None)
+
+        if request and request.user.has_perm("recruitment.add_candidate"):
+            profile_pic_url = f"https://ui-avatars.com/api/?name={name}"
+            self.cleaned_data["profile"] = profile_pic_url
+
+        super().clean()
+        return self.cleaned_data
 
 
 class RecruitmentDropDownForm(DropDownForm):
@@ -641,9 +706,9 @@ class QuestionForm(ModelForm):
         required=False,
         label=_("Recruitment"),
     )
-    # job_positions = forms.ModelMultipleChoiceField(
-    #     queryset=JobPosition.objects.all(), required=False, label=_("Job Positions")
-    # )
+    options = forms.CharField(
+        widget=forms.TextInput, label=_("Options"), required=False
+    )
 
     class Meta:
         """
@@ -652,11 +717,7 @@ class QuestionForm(ModelForm):
 
         model = RecruitmentSurvey
         fields = "__all__"
-        exclude = [
-            "recruitment_ids",
-            "job_position_ids",
-            "is_active",
-        ]
+        exclude = ["recruitment_ids", "job_position_ids", "is_active", "options"]
         labels = {
             "question": _("Question"),
             "sequence": _("Sequence"),
@@ -676,33 +737,78 @@ class QuestionForm(ModelForm):
         return table_html
 
     def clean(self):
-        super().clean()
+        cleaned_data = super().clean()
         recruitment = self.cleaned_data["recruitment"]
-        # jobs = self.cleaned_data["job_positions"]
-        qtype = self.cleaned_data["type"]
-        options = self.cleaned_data["options"]
+        question_type = self.cleaned_data["type"]
+        options = self.cleaned_data.get("options")
         if not recruitment.exists():  # or jobs.exists()):
             raise ValidationError(
-                "Choose any recruitment or job positions to apply this question"
+                {"recruitment": _("Choose any recruitment to apply this question")}
             )
         self.recruitment = recruitment
-        # self.job_positions = jobs
-
-        if qtype in ["options", "multiple"] and (options is None or options == ""):
+        if question_type in ["options", "multiple"] and (
+            options is None or options == ""
+        ):
             raise ValidationError({"options": "Options field is required"})
+        return cleaned_data
 
-        return
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        if instance.type in ["options", "multiple"]:
+            additional_options = []
+            for key, value in self.cleaned_data.items():
+                if key.startswith("options") and value:
+                    additional_options.append(value)
+
+            instance.options = ",".join(additional_options)
+            if commit:
+                instance.save()
+                self.save_m2m()
+        else:
+            instance.options = ""
+        return instance
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         instance = kwargs.get("instance", None)
+        self.option_count = 1
+
+        def create_options_field(option_key, initial=None):
+            self.fields[option_key] = forms.CharField(
+                widget=forms.TextInput(
+                    attrs={
+                        "name": option_key,
+                        "id": f"id_{option_key}",
+                        "class": "oh-input w-100",
+                    }
+                ),
+                label=_("Options"),
+                required=False,
+                initial=initial,
+            )
+
+        if instance:
+            split_options = instance.options.split(",")
+            for i, option in enumerate(split_options):
+                if i == 0:
+                    create_options_field("options", option)
+                else:
+                    self.option_count += 1
+                    create_options_field(f"options{i}", option)
+
         if instance:
             self.fields["recruitment"].initial = instance.recruitment_ids.all()
-            # self.fields["job_positions"].initial = instance.job_position_ids.all()
         self.fields["type"].widget.attrs.update(
             {"class": " w-100", "style": "border:solid 1px #6c757d52;height:50px;"}
         )
-        self.fields["options"].required = False
+        for key, value in self.data.items():
+            if key.startswith("options"):
+                self.option_count += 1
+                create_options_field(key, initial=value)
+        fields_order = list(self.fields.keys())
+        fields_order.remove("recruitment")
+        fields_order.insert(2, "recruitment")
+        self.fields = {field: self.fields[field] for field in fields_order}
 
 
 class SurveyForm(forms.Form):
@@ -771,7 +877,20 @@ class AddQuestionForm(Form):
         return table_html
 
 
-exclude_fields = ["id", "profile", "portfolio", "resume", "sequence"]
+exclude_fields = [
+    "id",
+    "profile",
+    "portfolio",
+    "resume",
+    "sequence",
+    "schedule_date",
+    "created_at",
+    "created_by",
+    "modified_by",
+    "is_active",
+    "last_updated",
+    "horilla_history",
+]
 
 
 class CandidateExportForm(forms.Form):
@@ -792,7 +911,6 @@ class CandidateExportForm(forms.Form):
             "recruitment_id",
             "job_position_id",
             "stage_id",
-            "schedule_date",
             "email",
             "mobile",
             "hired",
@@ -815,6 +933,31 @@ class OfferLetterForm(ModelForm):
                 attrs={"data-summernote": "", "style": "display:none;"}
             ),
         }
+
+    def get_template_language(self):
+        mail_data = {
+            "Receiver|Full name": "instance.get_full_name",
+            "Sender|Full name": "self.get_full_name",
+            "Receiver|Recruitment": "instance.recruitment_id",
+            "Sender|Recruitment": "self.recruitment_id",
+            "Receiver|Company": "instance.get_company",
+            "Sender|Company": "self.get_company",
+            "Receiver|Job position": "instance.get_job_position",
+            "Sender|Job position": "self.get_job_position",
+            "Receiver|Email": "instance.get_mail",
+            "Sender|Email": "self.get_mail",
+            "Receiver|Employee Type": "instance.get_employee_type",
+            "Sender|Employee Type": "self.get_employee_type",
+            "Receiver|Work Type": "instance.get_work_type",
+            "Sender|Work Type": "self.get_work_type",
+            "Candidate|Full name": "instance.get_full_name",
+            "Candidate|Recruitment": "instance.recruitment_id",
+            "Candidate|Company": "instance.get_company",
+            "Candidate|Job position": "instance.get_job_position",
+            "Candidate|Email": "instance.get_email",
+            "Candidate|Interview Table": "instance.get_interview|safe",
+        }
+        return mail_data
 
 
 class SkillZoneCreateForm(ModelForm):
@@ -1035,7 +1178,7 @@ class ScheduleInterviewForm(ModelForm):
         cleaned_data = super().clean()
         interview_date = cleaned_data.get("interview_date")
         interview_time = cleaned_data.get("interview_time")
-
+        managers = cleaned_data["employee_id"]
         if not instance.pk and interview_date and interview_date < date.today():
             self.add_error("interview_date", _("Interview date cannot be in the past."))
 
@@ -1050,6 +1193,20 @@ class ScheduleInterviewForm(ModelForm):
                     "interview_time", _("Interview time cannot be in the past.")
                 )
 
+        leave_employees = LeaveRequest.objects.filter(
+            employee_id__in=managers, status="approved"
+        )
+        employees = [
+            leave.employee_id.get_full_name()
+            for leave in leave_employees
+            if interview_date in leave.requested_dates()
+        ]
+
+        if employees:
+            self.add_error(
+                "employee_id", _(f"{employees} have approved leave on this date")
+            )
+
         return cleaned_data
 
     def as_p(self, *args, **kwargs):
@@ -1059,3 +1216,24 @@ class ScheduleInterviewForm(ModelForm):
         context = {"form": self}
         table_html = render_to_string("common_form.html", context)
         return table_html
+
+
+class SkillsForm(ModelForm):
+    class Meta:
+        model = Skill
+        fields = ["title"]
+
+
+class ResumeForm(ModelForm):
+    class Meta:
+        model = Resume
+        fields = ["file", "recruitment_id"]
+        widgets = {"recruitment_id": forms.HiddenInput()}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["file"].widget.attrs.update(
+            {
+                "onchange": "submitForm($(this))",
+            }
+        )

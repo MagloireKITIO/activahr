@@ -10,7 +10,7 @@ import recruitment.views.actions
 import recruitment.views.dashboard
 import recruitment.views.search
 import recruitment.views.surveys
-from base.views import object_duplicate
+from base.views import add_remove_dynamic_fields, object_duplicate
 from recruitment.forms import (
     OfferLetterForm,
     QuestionForm,
@@ -84,21 +84,26 @@ urlpatterns = [
     path("pipeline/", views.recruitment_pipeline, name="pipeline"),
     path("pipeline-search/", views.filter_pipeline, name="pipeline-search"),
     path(
-        "pipeline-stages-component",
+        "pipeline-stages-component/<str:view>/",
         views.stage_component,
         name="pipeline-stages-component",
     ),
     path("get-stage-count", views.get_stage_badge_count, name="get-stage-count"),
     path(
+        "update-candidate-stage-and-sequence",
+        views.update_candidate_stage_and_sequence,
+        name="update-candidate-stage-and-sequence",
+    ),
+    path(
         "update-candidate-sequence",
         views.update_candidate_sequence,
         name="update-candidate-sequence",
     ),
-    path(
-        "update-candidate-stage",
-        views.update_candidate_stage,
-        name="update-candidate-stage",
-    ),
+    # path(
+    #     "update-candidate-stage",
+    #     views.update_candidate_stage,
+    #     name="update-candidate-stage",
+    # ),
     path(
         "candidate-stage-component",
         views.candidate_component,
@@ -114,11 +119,6 @@ urlpatterns = [
         "recruitment-archive/<int:rec_id>",
         views.recruitment_archive,
         name="recruitment-archive",
-    ),
-    path(
-        "pipeline-search-candidate",
-        recruitment.views.search.pipeline_candidate_search,
-        name="pipeline-search-candidate",
     ),
     path(
         "candidate-schedule-date-update",
@@ -356,6 +356,18 @@ urlpatterns = [
         name="recruitment-survey-question-template-create",
     ),
     path(
+        "add-remove-options-field",
+        add_remove_dynamic_fields,
+        name="add-remove-options-field",
+        kwargs={
+            "model": RecruitmentSurvey,
+            "form_class": QuestionForm,
+            "template": "survey/add_more_options.html",
+            "field_type": "character",
+            "field_name_pre": "options",
+        },
+    ),
+    path(
         "recruitment-survey-question-template-edit/<int:survey_id>/",
         recruitment.views.surveys.update_question_template,
         name="recruitment-survey-question-template-edit",
@@ -475,6 +487,7 @@ urlpatterns = [
     path("create-mail-template/", create_letter, name="create-mail-template"),
     path("delete-mail-template/", delete_mail_templates, name="delete-mail-template"),
     path("get-template/<int:obj_id>/", get_template, name="get-template"),
+    path("get-template-hint/", get_template, name="get-template-hint"),
     path(
         "create-candidate-rating/<int:cand_id>/",
         views.create_candidate_rating,
@@ -538,5 +551,50 @@ urlpatterns = [
         "delete-reject-reasons",
         views.delete_reject_reason,
         name="delete-reject-reasons",
+    ),
+    path(
+        "resume-completion",
+        views.resume_completion,
+        name="resume-completion",
+    ),
+    path(
+        "check-vaccancy",
+        views.check_vaccancy,
+        name="check-vaccancy",
+    ),
+    path(
+        "create-skills/",
+        views.create_skills,
+        name="create-skills",
+    ),
+    path(
+        "delete-skills/",
+        views.delete_skills,
+        name="delete-skills",
+    ),
+    path(
+        "add-bulk-resume/",
+        views.add_bulk_resumes,
+        name="add-bulk-resume",
+    ),
+    path(
+        "view-bulk-resume/",
+        views.view_bulk_resumes,
+        name="view-bulk-resume",
+    ),
+    path(
+        "delete-resume-file/",
+        views.delete_resume_file,
+        name="delete-resume-file",
+    ),
+    path(
+        "matching-resumes/<int:rec_id>",
+        views.matching_resumes,
+        name="matching-resumes",
+    ),
+    path(
+        "matching-resume-completion",
+        views.matching_resume_completion,
+        name="matching-resume-completion",
     ),
 ]

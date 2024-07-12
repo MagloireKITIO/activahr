@@ -2,6 +2,7 @@ import calendar
 from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from django.urls import reverse
 
 from notifications.signals import notify
 
@@ -16,15 +17,28 @@ def update_rotating_work_type_assign(rotating_work_type, new_date):
     employee_work_info = employee.employee_work_info
     work_type1 = rotating_work_type.rotating_work_type_id.work_type1
     work_type2 = rotating_work_type.rotating_work_type_id.work_type2
-    new = rotating_work_type.next_work_type
-    next = work_type2
-    if new == next:
-        next = work_type1
-    employee_work_info.work_type_id = new
+    additional_work_types = (
+        rotating_work_type.rotating_work_type_id.additional_work_types()
+    )
+    if additional_work_types is None:
+        total_rotate_work_types = [work_type1, work_type2]
+    else:
+        total_rotate_work_types = [work_type1, work_type2] + list(additional_work_types)
+    next_work_type_index = rotating_work_type.additional_data.get(
+        "next_work_type_index", 0
+    )
+    next_work_type = total_rotate_work_types[next_work_type_index]
+    if next_work_type_index < len(total_rotate_work_types) - 1:
+        next_work_type_index += 1
+    else:
+        next_work_type_index = 0
+
+    rotating_work_type.additional_data["next_work_type_index"] = next_work_type_index
+    employee_work_info.work_type_id = rotating_work_type.next_work_type
     employee_work_info.save()
     rotating_work_type.next_change_date = new_date
-    rotating_work_type.current_work_type = new
-    rotating_work_type.next_work_type = next
+    rotating_work_type.current_work_type = rotating_work_type.next_work_type
+    rotating_work_type.next_work_type = next_work_type
     rotating_work_type.save()
     bot = User.objects.filter(username="Horilla Bot").first()
     if bot is not None:
@@ -38,7 +52,7 @@ def update_rotating_work_type_assign(rotating_work_type, new_date):
             verb_es="Su tipo de trabajo ha sido cambiado.",
             verb_fr="Votre type de travail a été modifié.",
             icon="infinite",
-            redirect="/employee/employee-profile",
+            redirect=reverse("employee-profile"),
         )
     return
 
@@ -120,17 +134,26 @@ def update_rotating_shift_assign(rotating_shift, new_date):
 
     employee = rotating_shift.employee_id
     employee_work_info = employee.employee_work_info
-    shift1 = rotating_shift.rotating_shift_id.shift1
-    shift2 = rotating_shift.rotating_shift_id.shift2
-    new = rotating_shift.next_shift
-    next = shift2
-    if new == next:
-        next = shift1
-    employee_work_info.shift_id = new
+    rotating_shift_id = rotating_shift.rotating_shift_id
+    shift1 = rotating_shift_id.shift1
+    shift2 = rotating_shift_id.shift2
+    additional_shifts = rotating_shift_id.additional_shifts()
+    if additional_shifts is None:
+        total_rotate_shifts = [shift1, shift2]
+    else:
+        total_rotate_shifts = [shift1, shift2] + list(additional_shifts)
+    next_shift_index = rotating_shift.additional_data.get("next_shift_index")
+    next_shift = total_rotate_shifts[next_shift_index]
+    if next_shift_index < len(total_rotate_shifts) - 1:
+        next_shift_index += 1
+    else:
+        next_shift_index = 0  # Wrap around to the beginning of the list
+    rotating_shift.additional_data["next_shift_index"] = next_shift_index
+    employee_work_info.shift_id = rotating_shift.next_shift
     employee_work_info.save()
     rotating_shift.next_change_date = new_date
-    rotating_shift.current_shift = new
-    rotating_shift.next_shift = next
+    rotating_shift.current_shift = rotating_shift.next_shift
+    rotating_shift.next_shift = next_shift
     rotating_shift.save()
     bot = User.objects.filter(username="Horilla Bot").first()
     if bot is not None:
@@ -144,7 +167,7 @@ def update_rotating_shift_assign(rotating_shift, new_date):
             verb_es="Tu turno ha sido cambiado.",
             verb_fr="Votre quart de travail a été modifié.",
             icon="infinite",
-            redirect="/employee/employee-profile",
+            redirect=reverse("employee-profile"),
         )
     return
 
@@ -254,7 +277,7 @@ def switch_shift():
                     verb_es="Notificación de cambios de turno",
                     verb_fr="Notification des changements de quart de travail",
                     icon="refresh",
-                    redirect="/employee/employee-profile",
+                    redirect=reverse("employee-profile"),
                 )
     return
 
@@ -296,7 +319,7 @@ def undo_shift():
                     verb_es="Notificación de cambios de turno, Fecha solicitada vencida.",
                     verb_fr="Notification de changement d'équipe, la date demandée a expiré.",
                     icon="refresh",
-                    redirect="/employee/employee-profile",
+                    redirect=reverse("employee-profile"),
                 )
     return
 
@@ -336,7 +359,7 @@ def switch_work_type():
                 verb_es="Notificación de cambios de tipo de trabajo",
                 verb_fr="Notification de changement de type de travail",
                 icon="swap-horizontal",
-                redirect="/employee/employee-profile",
+                redirect=reverse("employee-profile"),
             )
     return
 
@@ -378,7 +401,7 @@ def undo_work_type():
                 verb_es="Notificación de cambios de tipo de trabajo, fecha solicitada vencida.",
                 verb_fr="Notification de changement de type de travail, la date demandée a expiré.",
                 icon="swap-horizontal",
-                redirect="/employee/employee-profile",
+                redirect=reverse("employee-profile"),
             )
     return
 

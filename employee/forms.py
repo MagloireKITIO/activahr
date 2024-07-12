@@ -21,6 +21,7 @@ class YourForm(forms.Form):
         pass
 """
 
+import logging
 import re
 from datetime import date
 from typing import Any
@@ -33,7 +34,6 @@ from django.template.loader import render_to_string
 from django.utils.translation import gettext as _
 from django.utils.translation import gettext_lazy as trans
 
-from base import thread_local_middleware
 from base.methods import reload_queryset
 from employee.models import (
     Actiontype,
@@ -47,8 +47,10 @@ from employee.models import (
     Policy,
     PolicyMultipleFile,
 )
-from horilla.decorators import logger
+from horilla import horilla_middlewares
 from horilla_audit.models import AccountBlockUnblock
+
+logger = logging.getLogger(__name__)
 
 
 class ModelForm(forms.ModelForm):
@@ -58,7 +60,7 @@ class ModelForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         reload_queryset(self.fields)
         for _, field in self.fields.items():
             widget = field.widget
@@ -155,7 +157,10 @@ class EmployeeForm(ModelForm):
 
         model = Employee
         fields = "__all__"
-        exclude = ("employee_user_id",)
+        exclude = (
+            "employee_user_id",
+            "additional_info",
+        )
         widgets = {
             "dob": TextInput(attrs={"type": "date", "id": "dob"}),
         }
@@ -176,6 +181,10 @@ class EmployeeForm(ModelForm):
             kwargs["initial"] = initial
         else:
             self.initial = {"badge_id": self.get_next_badge_id()}
+
+    def as_p(self, *args, **kwargs):
+        context = {"form": self}
+        return render_to_string("employee/create_form/personal_info_as_p.html", context)
 
     def get_next_badge_id(self):
         """
@@ -282,16 +291,16 @@ class EmployeeWorkInformationForm(ModelForm):
                 self.fields[field].disabled = True
         field_names = {
             "Department": "department",
-            # "Job Position": "job_position",
-            # "Job Role": "job_role",
+            "Job Position": "job_position",
+            "Job Role": "job_role",
             "Work Type": "work_type",
             "Employee Type": "employee_type",
             "Shift": "employee_shift",
         }
         urls = {
             "Department": "#dynamicDept",
-            # "Job Position": "#dynamicJobPosition",
-            # "Job Role": "#dynamicJobRole",
+            "Job Position": "#dynamicJobPosition",
+            "Job Role": "#dynamicJobRole",
             "Work Type": "#dynamicWorkType",
             "Employee Type": "#dynamicEmployeeType",
             "Shift": "#dynamicShift",
@@ -666,9 +675,6 @@ class ActiontypeForm(ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        account_block_unblock = AccountBlockUnblock.objects.first()
-        if not account_block_unblock.is_enabled:
-            self.fields.pop("block_option")
 
         self.fields["action_type"].widget.attrs.update(
             {

@@ -17,7 +17,6 @@ from django.dispatch import receiver
 from django.utils.translation import gettext as _
 from django.utils.translation import gettext_lazy as trans
 
-from base import thread_local_middleware
 from base.horilla_company_manager import HorillaCompanyManager
 from base.models import (
     Company,
@@ -30,6 +29,7 @@ from base.models import (
     validate_time_format,
 )
 from employee.methods.duration_methods import format_time, strtime_seconds
+from horilla import horilla_middlewares
 from horilla.models import HorillaModel
 from horilla_audit.methods import get_diff
 from horilla_audit.models import HorillaAuditInfo, HorillaAuditLog
@@ -155,6 +155,9 @@ class Employee(models.Model):
         This method is used to return the shift of the employee
         """
         return getattr(getattr(self, "employee_work_info", None), "email", self.email)
+
+    def get_email(self):
+        return self.get_mail()
 
     def get_work_type(self):
         """
@@ -348,7 +351,7 @@ class Employee(models.Model):
         """
         from attendance.models import Attendance
 
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         if not getattr(request, "working_employees", None):
             today = datetime.now().date()
             yesterday = today - timedelta(days=1)
@@ -366,7 +369,7 @@ class Employee(models.Model):
         Recruitment model
         """
 
-        unique_together = ("employee_first_name", "employee_last_name")
+        unique_together = ("employee_first_name", "employee_last_name", "email")
         permissions = (
             ("change_ownprofile", "Update own profile"),
             ("view_ownprofile", "View Own Profile"),
@@ -411,7 +414,7 @@ class Employee(models.Model):
         # call the parent class's save method to save the object
         prev_employee = Employee.objects.filter(id=self.id).first()
         super().save(*args, **kwargs)
-        request = getattr(thread_local_middleware._thread_locals, "request", None)
+        request = getattr(horilla_middlewares._thread_locals, "request", None)
         if request and not self.is_active and self.get_archive_condition() is not False:
             self.is_active = True
             super().save(*args, **kwargs)
@@ -433,6 +436,9 @@ class Employee(models.Model):
             view_ownprofile = Permission.objects.get(codename="view_ownprofile")
             user.user_permissions.add(view_ownprofile)
             user.user_permissions.add(change_ownprofile)
+
+        if not hasattr(self, "employee_work_info"):
+            EmployeeWorkInformation.objects.get_or_create(employee_id=self)
             return self.save()
 
         return self
@@ -646,6 +652,7 @@ class EmployeeBankDetails(HorillaModel):
 
 class NoteFiles(HorillaModel):
     files = models.FileField(upload_to="employee/NoteFiles", blank=True, null=True)
+    objects = models.Manager()
 
     def __str__(self):
         return self.files.name.split("/")[-1]
@@ -823,4 +830,5 @@ class EmployeeGeneralSetting(HorillaModel):
     """
 
     badge_id_prefix = models.CharField(max_length=5, default="PEP")
+    objects = models.Manager()
     company_id = models.ForeignKey(Company, null=True, on_delete=models.CASCADE)

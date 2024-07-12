@@ -82,7 +82,8 @@
               hx-get="{% url 'work-type-request-search' %}?{{pd}}&orderby=requested_till"
               hx-target="#view-container"
             >{% trans "Requested Till" %}</div>
-            <div data-cell-index="5" data-cell-title='{% trans "Description" %}' class="oh-sticky-table__th">{% trans "Description" %}</div>
+            <div data-cell-index="5" data-cell-title='{% trans "Status" %}' class="oh-sticky-table__th">{% trans "Status" %}</div>
+            <div data-cell-index="6" data-cell-title='{% trans "Description" %}' class="oh-sticky-table__th">{% trans "Description" %}</div>
             <div class="oh-sticky-table__th" style="width:115px;">{% trans "Comment" %}</div>
             <div class="oh-sticky-table__th" style="width: 190px;">{% trans "Actions" %}</div>
             {% if perms.base.change_worktyperequest or request.user|is_reportingmanager %}
@@ -126,7 +127,8 @@
             <div class="oh-sticky-table__td" data-cell-index="2">{{work_type_request.previous_work_type_id}}</div>
             <div class="oh-sticky-table__td dateformat_changer" data-cell-index="3">{{work_type_request.requested_date}}</div>
             <div class="oh-sticky-table__td dateformat_changer" data-cell-index="4">{{work_type_request.requested_till}}</div>
-            <div class="oh-sticky-table__td" data-cell-index="5">{{work_type_request.description|truncatechars:25}}</div>
+            <div class="oh-sticky-table__td" data-cell-index="5">{{work_type_request.request_status}}</div>
+            <div class="oh-sticky-table__td" data-cell-index="6">{{work_type_request.description|truncatechars:25}}</div>
             <div class="oh-sticky-table__td" onclick="event.stopPropagation();">
 
                 <button type="button" hx-get="{% url 'view-work-type-comment' work_type_request.id %}" hx-target="#commentContainer"
@@ -168,9 +170,10 @@
               <div class="oh-sticky-table__td" onclick="event.stopPropagation();">
                 <div class="oh-btn-group" >
                   {% if work_type_request.approved == False and work_type_request.canceled == False %}
-                    <a href="/work-type-request-approve/{{work_type_request.id}}/"
-                      title="{% trans 'Approve' %}"
-                      onclick="return confirm('{% trans "Do you want to approve this request?" %}')"
+                    <a title="{% trans 'Approve' %}"
+                      hx-confirm="{% trans 'Do you want to approve this request?' %}"
+                      hx-post="/work-type-request-approve/{{work_type_request.id}}/?{{pd}}"
+                      hx-target="#view-container"
                       class="oh-btn oh-btn--success w-100">
                       <ion-icon class="me-1" name="checkmark-outline"></ion-icon>
                     </a>
@@ -181,11 +184,16 @@
                     </a>
                   {% endif %}
                   {% if work_type_request.canceled == False %}
-                    <a href="/work-type-request-cancel/{{work_type_request.id}}/"
-                        title="{% trans 'Reject' %}"
-                        onclick="return confirm('{% trans "Do you want to reject this request?" %}')"
-                        class="oh-btn oh-btn--danger w-100">
-                        <ion-icon class="me-1" name="close-circle-outline"></ion-icon>
+                    <a hx-confirm="{% trans 'Do you want to reject this request?' %}"
+                      hx-post="/work-type-request-cancel/{{work_type_request.id}}/?{{pd}}"
+                      hx-target="#view-container"
+                      title="{% trans 'Reject' %}"
+                      class="oh-btn oh-btn--danger w-100"
+                      >
+                      <ion-icon
+                        class="me-1"
+                        name="close-circle-outline"
+                      ></ion-icon>
                     </a>
                   {% else %}
                     <a type="submit" href="#" title="{% trans 'Reject' %}"

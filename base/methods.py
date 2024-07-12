@@ -1,17 +1,20 @@
 import io
 import json
+import os
 import random
 from datetime import date, datetime, time
 
 import pandas as pd
 from django.apps import apps
+from django.conf import settings
+from django.contrib.staticfiles import finders
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.db.models import F, ForeignKey, ManyToManyField, OneToOneField
 from django.db.models.functions import Lower
 from django.forms.models import ModelChoiceField
 from django.http import HttpResponse
-from django.template.loader import render_to_string
+from django.template.loader import get_template, render_to_string
 from django.utils.translation import gettext as _
 from xhtml2pdf import pisa
 
@@ -352,6 +355,7 @@ def get_key_instances(model, data_dict):
             "csrfmiddlewaretoken",
             "assign_sortby",
             "request_sortby",
+            "asset_under",
         ]
         or "dynamic_page" in key
     ]
@@ -556,7 +560,8 @@ def export_data(request, model, form_class, filter_class, file_name):
                     for format_name, format_string in date_formats.items():
                         if format_name == date_format:
                             value = start_date.strftime(format_string)
-
+                if isinstance(value, datetime):
+                    value = str(value)
                 data_export[verbose_name].append(value)
 
     data_frame = pd.DataFrame(data=data_export)
@@ -607,24 +612,69 @@ def check_owner(employee, instance):
         return False
 
 
-def generate_pdf(template_path, context, path=True, title=None):
-    html = template_path
+def link_callback(uri, rel):
+    """
+    Convert HTML URIs to absolute system paths so xhtml2pdf can access those
+    resources
+    """
+    if not uri.startswith("/static"):
+        return uri
+    uri = "payroll/fonts/Poppins_Regular.ttf"
+    result = finders.find(uri)
+    if result:
+        if not isinstance(result, (list, tuple)):
+            result = [result]
+
+        result = list(os.path.realpath(path) for path in result)
+        path = result[0]
+
+    else:
+        sUrl = settings.STATIC_URL
+        sRoot = settings.STATIC_ROOT
+        mUrl = settings.MEDIA_URL
+        mRoot = settings.MEDIA_ROOT
+
+        if uri.startswith(sUrl):
+            path = os.path.join(sRoot, uri.replace(sUrl, ""))
+        else:
+            return uri
+
+    if os.name == "nt":
+        return uri
+
+    if not os.path.isfile(path):
+        raise RuntimeError("media URI must start with %s or %s" % (sUrl, mUrl))
+    return path
+
+
+def generate_pdf(template_path, context, path=True, title=None, html=True):
+    template_path = template_path
+    context_data = context
     title = (
-        f"""{context.get("employee")}'s payslip for {context.get("range")}.pdf"""
+        f"""{context_data.get("employee")}'s payslip for {context_data.get("range")}.pdf"""
         if not title
         else title
     )
-    if path:
-        html = render_to_string(template_path, context)
 
-    result = io.BytesIO()
-    pdf = pisa.pisaDocument(io.BytesIO(html.encode("utf-8")), result)
+    response = HttpResponse(content_type="application/pdf")
+    response["Content-Disposition"] = f"attachment; filename={title}"
 
-    if not pdf.err:
-        response = HttpResponse(result.getvalue(), content_type="application/pdf")
-        response["Content-Disposition"] = f'''attachment;filename="{title}"'''
-        return response
-    return None
+    if html:
+        html = template_path
+    else:
+        template = get_template(template_path)
+        html = template.render(context_data)
+
+    pisa_status = pisa.CreatePDF(
+        html.encode("utf-8"),
+        dest=response,
+        link_callback=link_callback,
+    )
+
+    if pisa_status.err:
+        return HttpResponse("We had some errors <pre>" + html + "</pre>")
+
+    return response
 
 
 def filter_conditional_leave_request(request):
@@ -648,7 +698,7 @@ def filter_conditional_leave_request(request):
 
 
 def get_pagination():
-    from base.thread_local_middleware import _thread_locals
+    from horilla.horilla_middlewares import _thread_locals
 
     request = getattr(_thread_locals, "request", None)
     user = request.user

@@ -1,16 +1,20 @@
 from django.contrib.auth.models import Group
 from django.contrib.auth.views import PasswordResetConfirmView
 from django.urls import path
+from django.utils.translation import gettext_lazy as _
 
 from base import announcement, request_and_approve, views
 from base.forms import (
+    AttendanceAllowedIPForm,
     RotatingShiftAssignForm,
+    RotatingShiftForm,
     RotatingWorkTypeAssignForm,
     RotatingWorkTypeForm,
     ShiftRequestForm,
     WorkTypeRequestForm,
 )
 from base.models import (
+    AttendanceAllowedIP,
     Company,
     Department,
     EmployeeShift,
@@ -32,11 +36,57 @@ from horilla_audit.models import AuditTag
 
 urlpatterns = [
     path("", views.home, name="home-page"),
+    path("initialize-database", views.initialize_database, name="initialize-database"),
+    path(
+        "initialize-database-user",
+        views.initialize_database_user,
+        name="initialize-database-user",
+    ),
+    path(
+        "initialize-database-company",
+        views.initialize_database_company,
+        name="initialize-database-company",
+    ),
+    path(
+        "initialize-database-department",
+        views.initialize_database_department,
+        name="initialize-database-department",
+    ),
+    path(
+        "initialize-department-edit/<int:obj_id>",
+        views.initialize_department_edit,
+        name="initialize-department-edit",
+    ),
+    path(
+        "initialize-department-delete/<int:obj_id>",
+        views.initialize_department_delete,
+        name="initialize-department-delete",
+    ),
+    path(
+        "initialize-database-job-position",
+        views.initialize_database_job_position,
+        name="initialize-database-job-position",
+    ),
+    path(
+        "initialize-job-position-edit/<int:obj_id>",
+        views.initialize_job_position_edit,
+        name="initialize-job-position-edit",
+    ),
+    path(
+        "initialize-job-position-delete/<int:obj_id>",
+        views.initialize_job_position_delete,
+        name="initialize-job-position-delete",
+    ),
     path("login/", views.login_user, name="login"),
     path(
         "forgot-password",
         views.HorillaPasswordResetView.as_view(),
         name="forgot-password",
+    ),
+    path(
+        "employee-reset-password",
+        views.EmployeePasswordResetView.as_view(),
+        name="employee-reset-password",
     ),
     path("reset-send-success", views.reset_send_success, name="reset-send-success"),
     path("change-password", views.change_password, name="change-password"),
@@ -48,12 +98,6 @@ urlpatterns = [
     path("settings/user-group-view/", views.user_group, name="user-group-view"),
     path(
         "settings/user-group-search/", views.user_group_search, name="user-group-search"
-    ),
-    path(
-        "settings/user-group-update/<int:id>/",
-        views.user_group_update,
-        name="user-group-update",
-        kwargs={"model": Group},
     ),
     path(
         "user-group-delete/<int:id>/",
@@ -105,6 +149,11 @@ urlpatterns = [
         "settings/mail-server-create-update/",
         views.mail_server_create_or_update,
         name="mail-server-create-update",
+    ),
+    path(
+        "settings/mail-server-test-email/",
+        views.mail_server_test_email,
+        name="mail-server-test-email",
     ),
     path("mail-server-delete", views.mail_server_delete, name="mail-server-delete"),
     path(
@@ -191,6 +240,18 @@ urlpatterns = [
         views.object_delete,
         name="work-type-delete",
         kwargs={"model": WorkType, "redirect": "/settings/work-type-view"},
+    ),
+    path(
+        "add-remove-work-type-fields",
+        views.add_remove_dynamic_fields,
+        name="add-remove-work-type-fields",
+        kwargs={
+            "model": WorkType,
+            "form_class": RotatingWorkTypeForm,
+            "template": "base/rotating_work_type/htmx/add_more_work_type_fields.html",
+            "empty_label": _("---Choose Work Type---"),
+            "field_name_pre": "work_type",
+        },
     ),
     path(
         "settings/rotating-work-type-create/",
@@ -351,6 +412,18 @@ urlpatterns = [
         "settings/rotating-shift-create/",
         views.rotating_shift_create,
         name="rotating-shift-create",
+    ),
+    path(
+        "add-remove-shift-fields",
+        views.add_remove_dynamic_fields,
+        name="add-remove-shift-fields",
+        kwargs={
+            "model": EmployeeShift,
+            "form_class": RotatingShiftForm,
+            "template": "base/rotating_shift/htmx/add_more_shift_fields.html",
+            "empty_label": _("---Choose Shift---"),
+            "field_name_pre": "shift",
+        },
     ),
     path(
         "settings/rotating-shift-view/",
@@ -750,6 +823,26 @@ urlpatterns = [
         name="multiple-approval-condition",
     ),
     path(
+        "configuration/condition-value-fields",
+        views.get_condition_value_fields,
+        name="condition-value-fields",
+    ),
+    path(
+        "configuration/add-more-approval-managers",
+        views.add_more_approval_managers,
+        name="add-more-approval-managers",
+    ),
+    path(
+        "configuration/remove-approval-manager",
+        views.remove_approval_manager,
+        name="remove-approval-manager",
+    ),
+    path(
+        "configuration/hx-multiple-approval-condition",
+        views.hx_multiple_approval_condition,
+        name="hx-multiple-approval-condition",
+    ),
+    path(
         "multiple-level-approval-create",
         views.multiple_level_approval_create,
         name="multiple-level-approval-create",
@@ -898,6 +991,11 @@ urlpatterns = [
         name="announcement-single-view",
     ),
     path(
+        "announcement-delete-comment/<int:comment_id>/",
+        announcement.delete_announcement_comment,
+        name="announcement-delete-comment",
+    ),
+    path(
         "announcement-viewed-by", announcement.viewed_by, name="announcement-viewed-by"
     ),
     path("driver-viewed", views.driver_viewed_status, name="driver-viewed"),
@@ -912,5 +1010,52 @@ urlpatterns = [
         "settings/activate-biometric-attendance",
         views.activate_biometric_attendance,
         name="activate-biometric-attendance",
+    ),
+    path(
+        "emp-workinfo-complete",
+        views.employee_workinfo_complete,
+        name="emp-workinfo-complete",
+    ),
+    path(
+        "settings/allowed-ips/",
+        views.allowed_ips,
+        name="allowed-ips",
+    ),
+    path(
+        "settings/enable-ip-restriction/",
+        views.enable_ip_restriction,
+        name="enable-ip-restriction",
+    ),
+    path(
+        "settings/add-remove-ip-fields/",
+        views.add_remove_dynamic_fields,
+        name="add-remove-ip-fields",
+        kwargs={
+            "model": AttendanceAllowedIP,
+            "form_class": AttendanceAllowedIPForm,
+            "template": "attendance/ip_restriction/add_more_ip_fields.html",
+            "field_type": "character",
+            "field_name_pre": "ip_address",
+        },
+    ),
+    path(
+        "settings/create-allowed-ip/",
+        views.create_allowed_ips,
+        name="create-allowed-ip",
+    ),
+    path(
+        "settings/delete-allowed-ip/",
+        views.delete_allowed_ips,
+        name="delete-allowed-ip",
+    ),
+    path(
+        "settings/edit-allowed-ip/",
+        views.edit_allowed_ips,
+        name="edit-allowed-ip",
+    ),
+    path(
+        "settings/skills-view/",
+        views.skills_view,
+        name="skills-view",
     ),
 ]

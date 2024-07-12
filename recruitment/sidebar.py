@@ -22,7 +22,7 @@ SUBMENUS = [
     },
     {
         "menu": trans("Recruitment Pipeline"),
-        "redirect": reverse("pipeline") + "?closed=false",
+        "redirect": reverse("pipeline"),
         "accessibility": "recruitment.sidebar.pipeline_accessibility",
     },
     {
@@ -55,6 +55,11 @@ SUBMENUS = [
         "redirect": reverse("rec-stage-view"),
         "accessibility": "recruitment.sidebar.stage_accessibility",
     },
+    {
+        "menu": trans("Skill Zone"),
+        "redirect": reverse("skill-zone-view"),
+        "accessibility": "recruitment.sidebar.skill_zone_accessibility",
+    },
 ]
 
 
@@ -67,6 +72,7 @@ def menu_accessibilty(
 def pipeline_accessibility(
     request, _submenu: dict = {}, user_perms: PermWrapper = [], *args, **kwargs
 ) -> bool:
+    _submenu["redirect"] = _submenu["redirect"] + "?closed=false"
     return is_stagemanager(request.user) or request.user.has_perm(
         "recruitment.view_recruitment"
     )
@@ -81,7 +87,10 @@ def candidates_accessibility(
 def survey_accessibility(
     request, _submenu: dict = {}, user_perms: PermWrapper = [], *args, **kwargs
 ) -> bool:
-    return request.user.has_perm("recruitment.view_recruitmentsurvey")
+    _submenu["redirect"] = _submenu["redirect"] + "?closed=false"
+    return is_stagemanager(request.user) or request.user.has_perm(
+        "recruitment.view_recruitment"
+    )
 
 
 def recruitment_accessibility(
@@ -113,3 +122,15 @@ def stage_accessibility(
     request, _submenu: dict = {}, user_perms: PermWrapper = [], *args, **kwargs
 ) -> bool:
     return request.user.has_perm("recruitment.view_stage")
+
+
+def skill_zone_accessibility(
+    request, _submenu: dict = {}, user_perms: PermWrapper = [], *args, **kwargs
+) -> bool:
+    return is_stagemanager(request.user) or request.user.has_perm(
+        "recruitment.view_skillzone"
+    )
+
+
+def dashboard_accessibility(request, submenu, user_perms, *args, **kwargs):
+    return is_stagemanager(request.user) or "recruitment" in user_perms

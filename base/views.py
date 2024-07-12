@@ -7,6 +7,7 @@ This module is used to map url pattens with django views or methods
 import json
 import uuid
 from datetime import datetime, timedelta
+from os import path
 from urllib.parse import parse_qs, unquote, urlencode
 
 from django import forms
@@ -16,18 +17,20 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import Group, Permission, User
 from django.contrib.auth.views import PasswordResetConfirmView, PasswordResetView
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.mail import send_mail
 from django.core.paginator import Paginator
+from django.core.validators import validate_ipv46_address
 from django.db.models import F, ProtectedError, Q
 from django.http import Http404, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse_lazy
+from django.template.loader import render_to_string
+from django.urls import reverse, reverse_lazy
 from django.utils.translation import gettext as _
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from attendance.forms import AttendanceValidationConditionForm
-from attendance.methods.group_by import group_by_queryset
 from attendance.models import AttendanceValidationCondition, GraceTime
 from base.backends import ConfiguredEmailBackend
 from base.decorators import (
@@ -48,12 +51,15 @@ from base.forms import (
     AnnouncementExpireForm,
     AssignPermission,
     AssignUserGroup,
+    AttendanceAllowedIPForm,
+    AttendanceAllowedIPUpdateForm,
     AuditTagForm,
     ChangePasswordForm,
     CompanyForm,
     DepartmentForm,
     DriverForm,
     DynamicMailConfForm,
+    DynamicMailTestForm,
     DynamicPaginationForm,
     EmployeeShiftForm,
     EmployeeShiftScheduleForm,
@@ -98,6 +104,7 @@ from base.models import (
     Announcement,
     AnnouncementExpire,
     AnnouncementView,
+    AttendanceAllowedIP,
     BaserequestFile,
     BiometricAttendance,
     Company,
@@ -131,10 +138,12 @@ from helpdesk.models import DepartmentManager, TicketType
 from horilla.decorators import (
     delete_permission,
     duplicate_permission,
+    hx_request_required,
     login_required,
     manager_can_enter,
     permission_required,
 )
+from horilla.group_by import group_by_queryset
 from horilla_audit.forms import HistoryTrackingFieldsForm
 from horilla_audit.models import AccountBlockUnblock, AuditTag, HistoryTrackingFields
 from notifications.base.models import AbstractNotification
@@ -143,7 +152,8 @@ from notifications.signals import notify
 from payroll.forms.component_forms import PayrollSettingsForm
 from payroll.models.models import EncashmentGeneralSettings
 from payroll.models.tax_models import PayrollSettings
-from recruitment.models import RejectReason
+from pms.models import KeyResult
+from recruitment.models import RejectReason, Skill
 
 
 def custom404(request):
@@ -178,11 +188,218 @@ def paginator_qry(queryset, page_number):
     return queryset
 
 
+def initialize_database_condition():
+    initialize_database = not User.objects.exists()
+    if not initialize_database:
+        initialize_database = True
+        superusers = User.objects.filter(is_superuser=True)
+        for user in superusers:
+            if hasattr(user, "employee_get"):
+                initialize_database = False
+                break
+    return initialize_database
+
+
+def initialize_database(request):
+    if initialize_database_condition():
+        if request.method == "POST":
+            password = request._post.get("password")
+            from horilla.horilla_settings import DB_INIT_PASSWORD as db_password
+
+            if db_password == password:
+                return redirect(initialize_database_user)
+            else:
+                messages.warning(
+                    request,
+                    _("The password you entered is incorrect. Please try again."),
+                )
+                return HttpResponse("<script>window.location.reload()</script>")
+        return render(request, "initialize_database/horilla_user.html")
+    else:
+        return redirect("/")
+
+
+@hx_request_required
+def initialize_database_user(request):
+    if request.method == "POST":
+        form_data = request.__dict__.get("_post")
+        first_name = form_data.get("firstname")
+        last_name = form_data.get("lastname")
+        username = form_data.get("username")
+        password = form_data.get("password")
+        email = form_data.get("email")
+        phone = form_data.get("phone")
+        user = User.objects.filter(username=username).first()
+        if user and not hasattr(user, "employee_get"):
+            user.delete()
+        user = User.objects.create_superuser(
+            username=username, email=email, password=password
+        )
+        employee = Employee()
+        employee.employee_user_id = user
+        employee.employee_first_name = first_name
+        employee.employee_last_name = last_name
+        employee.email = email
+        employee.phone = phone
+        employee.save()
+        user = authenticate(request, username=username, password=password)
+        login(request, user)
+        return render(
+            request,
+            "initialize_database/horilla_company.html",
+            {"form": CompanyForm(initial={"hq": True})},
+        )
+    return render(request, "initialize_database/horilla_user_signup.html")
+
+
+@hx_request_required
+def initialize_database_company(request):
+    form = CompanyForm()
+    if request.method == "POST":
+        form = CompanyForm(request.POST, request.FILES)
+        if form.is_valid():
+            company = form.save()
+            try:
+                employee = request.user.employee_get
+                employee.employee_work_info.company_id = company
+                employee.employee_work_info.save()
+            except:
+                pass
+            return render(
+                request,
+                "initialize_database/horilla_department.html",
+                {"form": DepartmentForm(initial={"company_id": company})},
+            )
+    return render(request, "initialize_database/horilla_company.html", {"form": form})
+
+
+@hx_request_required
+def initialize_database_department(request):
+    departments = Department.objects.all()
+    form = DepartmentForm(initial={"company_id": Company.objects.first()})
+    if request.method == "POST":
+        form = DepartmentForm(request.POST)
+        if form.is_valid():
+            company = form.cleaned_data.get("company_id")
+            form.save()
+            form = DepartmentForm(initial={"company_id": company})
+    return render(
+        request,
+        "initialize_database/horilla_department_form.html",
+        {"form": form, "departments": departments},
+    )
+
+
+@hx_request_required
+def initialize_department_edit(request, obj_id):
+    department = Department.find(obj_id)
+    form = DepartmentForm(instance=department)
+    if request.method == "POST":
+        form = DepartmentForm(request.POST, instance=department)
+        if form.is_valid():
+            company = form.cleaned_data.get("company_id")
+            form.save()
+            return render(
+                request,
+                "initialize_database/horilla_department_form.html",
+                {
+                    "form": DepartmentForm(initial={"company_id": company}),
+                    "departments": Department.objects.all(),
+                },
+            )
+    return render(
+        request,
+        "initialize_database/horilla_department_form.html",
+        {
+            "form": form,
+            "department": department,
+            "departments": Department.objects.all(),
+        },
+    )
+
+
+@hx_request_required
+def initialize_department_delete(request, obj_id):
+    department = Department.find(obj_id)
+    department.delete() if department else None
+    return redirect(initialize_database_department)
+
+
+@hx_request_required
+def initialize_database_job_position(request):
+    company = Company.objects.first()
+    form = JobPositionForm(initial={"company_id": company})
+    if request.method == "POST":
+        form = JobPositionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            form = JobPositionForm(initial={"company_id": Company.objects.first()})
+        return render(
+            request,
+            "initialize_database/horilla_job_position_form.html",
+            {
+                "form": form,
+                "job_positions": JobPosition.objects.all(),
+                "company": company,
+            },
+        )
+    return render(
+        request,
+        "initialize_database/horilla_job_position.html",
+        {"form": form, "job_positions": JobPosition.objects.all(), "company": company},
+    )
+
+
+@hx_request_required
+def initialize_job_position_edit(request, obj_id):
+    company = Company.objects.first()
+    job_position = JobPosition.find(obj_id)
+    form = JobPositionForm(instance=job_position)
+    if request.method == "POST":
+        form = JobPositionForm(request.POST, instance=job_position)
+        if form.is_valid():
+            form.save()
+            return render(
+                request,
+                "initialize_database/horilla_job_position_form.html",
+                {
+                    "form": JobPositionForm(initial={"company_id": company}),
+                    "job_positions": JobPosition.objects.all(),
+                    "company": company,
+                },
+            )
+    return render(
+        request,
+        "initialize_database/horilla_job_position_form.html",
+        {
+            "form": form,
+            "job_position": job_position,
+            "job_positions": JobPosition.objects.all(),
+            "company": company,
+        },
+    )
+
+
+@hx_request_required
+def initialize_job_position_delete(request, obj_id):
+    company = Company.objects.first()
+    job_position = JobPosition.find(obj_id)
+    job_position.delete() if job_position else None
+    return render(
+        request,
+        "initialize_database/horilla_job_position_form.html",
+        {
+            "form": JobPositionForm(initial={"company_id": Company.objects.first()}),
+            "job_positions": JobPosition.objects.all(),
+            "company": company,
+        },
+    )
+
+
 def login_user(request):
     """
     This method is used render login template and authenticate user
     """
-
     if request.method == "POST":
         username = request.POST["username"]
         password = request.POST["password"]
@@ -220,7 +437,9 @@ def login_user(request):
                 url += f"?{params}"
             return redirect(url)
         return redirect("/")
-    return render(request, "login.html")
+    return render(
+        request, "login.html", {"initialize_database": initialize_database_condition()}
+    )
 
 
 def include_employee_instance(request, form):
@@ -268,7 +487,7 @@ class HorillaPasswordResetView(PasswordResetView):
             opts = {
                 "use_https": self.request.is_secure(),
                 "token_generator": self.token_generator,
-                "from_email": email_backend.dynamic_username_with_display_name,
+                "from_email": email_backend.dynamic_from_email_with_display_name,
                 "email_template_name": self.email_template_name,
                 "subject_template_name": self.subject_template_name,
                 "request": self.request,
@@ -276,9 +495,62 @@ class HorillaPasswordResetView(PasswordResetView):
                 "extra_email_context": self.extra_email_context,
             }
             form.save(**opts)
+            if self.request.user.is_authenticated:
+                messages.success(
+                    self.request, _("Password reset link sent successfully")
+                )
+                return HttpResponseRedirect(self.request.META.get("HTTP_REFERER", "/"))
+
             return redirect(reverse_lazy("reset-send-success"))
+
         messages.info(self.request, _("No user found with the username"))
         return redirect("forgot-password")
+
+
+class EmployeePasswordResetView(PasswordResetView):
+    """
+    Horilla View for Employee Reset Password
+    """
+
+    template_name = "forgot_password.html"
+    form_class = PassWordResetForm
+
+    def form_valid(self, form):
+        try:
+            email_backend = ConfiguredEmailBackend()
+            default = "base.backends.ConfiguredEmailBackend"
+            is_default_backend = True
+            EMAIL_BACKEND = getattr(settings, "EMAIL_BACKEND", "")
+            if EMAIL_BACKEND and default != EMAIL_BACKEND:
+                is_default_backend = False
+            if is_default_backend and not email_backend.configuration:
+                messages.error(self.request, _("Primary mail server is not configured"))
+                return HttpResponseRedirect(self.request.META.get("HTTP_REFERER", "/"))
+
+            username = form.cleaned_data["email"]
+            user = User.objects.filter(username=username).first()
+            if user:
+                opts = {
+                    "use_https": self.request.is_secure(),
+                    "token_generator": self.token_generator,
+                    "from_email": email_backend.dynamic_username_with_display_name,
+                    "email_template_name": self.email_template_name,
+                    "subject_template_name": self.subject_template_name,
+                    "request": self.request,
+                    "html_email_template_name": self.html_email_template_name,
+                    "extra_email_context": self.extra_email_context,
+                }
+                form.save(**opts)
+                messages.success(
+                    self.request, _("Password reset link sent successfully")
+                )
+            else:
+                messages.error(self.request, _("No user with the given username"))
+            return HttpResponseRedirect(self.request.META.get("HTTP_REFERER", "/"))
+
+        except Exception as e:
+            messages.error(self.request, f"Something went wrong.....")
+            return HttpResponseRedirect(self.request.META.get("HTTP_REFERER", "/"))
 
 
 setattr(PasswordResetConfirmView, "template_name", "reset_password.html")
@@ -356,56 +628,10 @@ def home(request):
     first_day_of_week = today - timedelta(days=today_weekday)
     last_day_of_week = first_day_of_week + timedelta(days=6)
 
-    employees_with_pending = []
     employee_charts = DashboardEmployeeCharts.objects.get_or_create(
         employee=request.user.employee_get
     )[0]
 
-    # List of field names to focus on
-    fields_to_focus = [
-        "job_position_id",
-        "department_id",
-        "work_type_id",
-        "employee_type_id",
-        "job_role_id",
-        "reporting_manager_id",
-        "company_id",
-        "location",
-        "email",
-        "mobile",
-        "shift_id",
-        "date_joining",
-        "contract_end_date",
-        "basic_salary",
-        "salary_hour",
-    ]
-
-    for employee in EmployeeWorkInformation.objects.filter(employee_id__is_active=True):
-        completed_field_count = sum(
-            1
-            for field_name in fields_to_focus
-            if getattr(employee, field_name) is not None
-        )
-        if completed_field_count < 14:
-            # Create a dictionary with employee information and pending field count
-            percent = f"{((completed_field_count / 14) * 100):.1f}"
-            employee_info = {
-                "employee": employee,
-                "completed_field_count": percent,
-            }
-            employees_with_pending.append(employee_info)
-        else:
-            pass
-
-    emps = Employee.objects.filter(employee_work_info__isnull=True)
-    for emp in emps:
-        employees_with_pending.insert(
-            0,
-            {
-                "employee": Workinfo(employee=emp),
-                "completed_field_count": "0",
-            },
-        )
     announcements = Announcement.objects.all()
     general_expire = AnnouncementExpire.objects.all().first()
     general_expire_date = 30 if not general_expire else general_expire.days
@@ -437,13 +663,78 @@ def home(request):
     context = {
         "first_day_of_week": first_day_of_week.strftime("%Y-%m-%d"),
         "last_day_of_week": last_day_of_week.strftime("%Y-%m-%d"),
-        "employees_with_pending": employees_with_pending,
         "announcement": announcement_list,
         "general_expire_date": general_expire_date,
         "charts": employee_charts.charts,
     }
 
     return render(request, "index.html", context)
+
+
+@login_required
+def employee_workinfo_complete(request):
+
+    employees_with_pending = []
+
+    # List of field names to focus on
+    fields_to_focus = [
+        "job_position_id",
+        "department_id",
+        "work_type_id",
+        "employee_type_id",
+        "job_role_id",
+        "reporting_manager_id",
+        "company_id",
+        "location",
+        "email",
+        "mobile",
+        "shift_id",
+        "date_joining",
+        "contract_end_date",
+        "basic_salary",
+        "salary_hour",
+    ]
+    search = request.GET.get("search", "")
+    for employee in EmployeeWorkInformation.objects.filter(
+        employee_id__employee_first_name__icontains=search, employee_id__is_active=True
+    ):
+        completed_field_count = sum(
+            1
+            for field_name in fields_to_focus
+            if getattr(employee, field_name) is not None
+        )
+        if completed_field_count < 14:
+            # Create a dictionary with employee information and pending field count
+            percent = f"{((completed_field_count / 14) * 100):.1f}"
+            employee_info = {
+                "employee": employee,
+                "completed_field_count": percent,
+            }
+            employees_with_pending.append(employee_info)
+        else:
+            pass
+
+    emps = Employee.objects.filter(employee_work_info__isnull=True)
+    for emp in emps:
+        employees_with_pending.insert(
+            0,
+            {
+                "employee": Workinfo(employee=emp),
+                "completed_field_count": "0",
+            },
+        )
+
+    employees_with_pending.sort(key=lambda x: float(x["completed_field_count"]))
+
+    employees_with_pending = paginator_qry(
+        employees_with_pending, request.GET.get("page")
+    )
+
+    return render(
+        request,
+        "work_info_complete.html",
+        {"employees_with_pending": employees_with_pending},
+    )
 
 
 @login_required
@@ -477,6 +768,7 @@ def candidate_reject_reasons(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("auth.add_group")
 def user_group_table(request):
     """
@@ -652,12 +944,13 @@ def user_group_search(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("auth.add_group")
 def group_assign(request):
     """
     This method is used to assign user group to the users.
     """
-    group_id = request.GET["group"]
+    group_id = request.GET.get("group")
     form = AssignUserGroup(
         initial={
             "group": group_id,
@@ -746,27 +1039,6 @@ def group_remove_user(request, uid, gid):
 
 
 @login_required
-@permission_required("change_group")
-def user_group_update(request, id, **kwargs):
-    """
-    This method is used to render updating form template for user permission group
-    args:
-        id : group instance id
-    """
-    group = Group.objects.get(id=id)
-    form = UserGroupForm(instance=group)
-    if request.method == "POST":
-        form = UserGroupForm(request.POST, instance=group)
-        if form.is_valid():
-            form.save()
-            messages.success(request, _("User group updated."))
-            return redirect(user_group_create)
-
-    groups = Group.objects.all()
-    return render(request, "base/auth/group.html", {"form": form, "groups": groups})
-
-
-@login_required
 @delete_permission()
 @require_http_methods(["POST", "DELETE"])
 def object_delete(request, id, **kwargs):
@@ -790,6 +1062,16 @@ def object_delete(request, id, **kwargs):
             request,
             _("This {} is already in use for {}.").format(instance, model_names_str),
         ),
+
+    if redirect_path == "/pms/filter-key-result/":
+        key_results = KeyResult.objects.all()
+        if key_results.exists():
+            previous_data = request.GET.urlencode()
+            redirect_path = redirect_path + "?" + previous_data
+            return redirect(redirect_path)
+        else:
+            return HttpResponse("<script>window.location.reload()</script>")
+
     if redirect_path:
         previous_data = request.GET.urlencode()
         redirect_path = redirect_path + "?" + previous_data
@@ -799,6 +1081,7 @@ def object_delete(request, id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @duplicate_permission()
 def object_duplicate(request, obj_id, **kwargs):
     model = kwargs["model"]
@@ -835,6 +1118,58 @@ def object_duplicate(request, obj_id, **kwargs):
 
 
 @login_required
+@hx_request_required
+@duplicate_permission()
+def add_remove_dynamic_fields(request, **kwargs):
+    if request.method == "POST":
+        model = kwargs["model"]
+        form_class = kwargs["form_class"]
+        template = kwargs["template"]
+        empty_label = kwargs.get("empty_label")
+        field_name_pre = kwargs["field_name_pre"]
+        field_type = kwargs.get("field_type")
+        hx_target = request.META.get("HTTP_HX_TARGET")
+        if hx_target:
+            field_counts = int(hx_target.split("_")[-1]) + 1
+            next_hx_target = f"{hx_target.rsplit('_', 1)[0]}_{field_counts}"
+            form = form_class()
+            field_name = f"{field_name_pre}{field_counts}"
+            if field_type and field_type == "character":
+                form.fields[field_name] = forms.CharField(
+                    widget=forms.TextInput(
+                        attrs={
+                            "class": "oh-input w-100",
+                            "name": field_name,
+                            "id": f"id_{field_name}",
+                        }
+                    ),
+                    required=False,
+                )
+            else:
+                form.fields[field_name] = forms.ModelChoiceField(
+                    queryset=model.objects.all(),
+                    widget=forms.Select(
+                        attrs={
+                            "class": "oh-select oh-select-2 mb-3",
+                            "name": field_name,
+                            "id": f"id_{field_name}",
+                        }
+                    ),
+                    required=False,
+                    empty_label=empty_label,
+                )
+            context = {
+                "field_counts": field_counts,
+                "field_html": form[field_name].as_widget(),
+                "current_hx_target": hx_target,
+                "next_hx_target": next_hx_target,
+            }
+            field_html = render_to_string(template, context)
+            return HttpResponse(field_html)
+    return HttpResponse()
+
+
+@login_required
 @permission_required("base.view_dynamicemailconfiguration")
 def mail_server_conf(request):
     mail_servers = DynamicEmailConfiguration.objects.all()
@@ -848,6 +1183,95 @@ def mail_server_conf(request):
             "mail_servers": mail_servers,
             "primary_mail_not_exist": primary_mail_not_exist,
         },
+    )
+
+
+from email.mime.image import MIMEImage
+
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
+from django.utils.html import strip_tags
+
+
+@login_required
+@permission_required("base.view_dynamicemailconfiguration")
+def mail_server_test_email(request):
+    instance_id = request.GET.get("instance_id")
+    form = DynamicMailTestForm()
+    if request.method == "POST":
+        form = DynamicMailTestForm(request.POST)
+        if form.is_valid():
+            email_to = form.cleaned_data["to_email"]
+            subject = _("Test mail from Horilla")
+
+            # HTML content
+            html_content = """
+            <html>
+                <body style="font-family: Arial, sans-serif; margin: 0; padding: 0;">
+                    <table align="center" width="600" cellpadding="0" cellspacing="0" border="0" style="border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
+                        <tr>
+                            <td align="center" bgcolor="#4CAF50" style="padding: 20px 0;">
+                                <h1 style="color: #ffffff; margin: 0;">Horilla</h1>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 20px;">
+                                <h3 style="color: #4CAF50;">Email tested successfully</h3>
+                                <b><p style="font-size: 14px;">Hi,<br>
+                                    This email is being sent as part of mail sever testing from Horilla.</p></b>
+                                <img src="cid:unique_image_id" alt="Test Image" style="width: 200px; height: auto; margin: 20px 0;">
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="#f0f0f0" style="padding: 10px; text-align: center;">
+                                <p style="font-size: 12px; color: black;">&copy; 2024 Horilla, Inc.</p>
+                            </td>
+                        </tr>
+                    </table>
+                </body>
+            </html>
+            """
+
+            # Plain text content (fallback for email clients that do not support HTML)
+            text_content = strip_tags(html_content)
+
+            email_backend = ConfiguredEmailBackend()
+            emailconfig = DynamicEmailConfiguration.objects.filter(
+                id=instance_id
+            ).first()
+            email_backend.configuration = emailconfig
+
+            try:
+                msg = EmailMultiAlternatives(
+                    subject,
+                    text_content,
+                    email_backend.dynamic_from_email_with_display_name,
+                    [email_to],
+                    connection=email_backend,
+                )
+                msg.attach_alternative(html_content, "text/html")
+
+                # Attach the image
+                image_path = path.join(
+                    settings.STATIC_ROOT, "images/ui/horilla-logo.png"
+                )
+                with open(image_path, "rb") as img:
+                    msg_img = MIMEImage(img.read())
+                    msg_img.add_header("Content-ID", "<unique_image_id>")
+                    msg.attach(msg_img)
+
+                msg.send()
+
+            except Exception as e:
+                messages.error(request, " ".join([_("Something went wrong :"), str(e)]))
+                return HttpResponse("<script>window.location.reload()</script>")
+
+            messages.success(request, _("Mail sent successfully"))
+            return HttpResponse("<script>window.location.reload()</script>")
+    return render(
+        request,
+        "base/mail_server/form_email_test.html",
+        {"form": form, "instance_id": instance_id},
     )
 
 
@@ -903,6 +1327,7 @@ def replace_primary_mail(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_dynamicemailconfiguration")
 def mail_server_create_or_update(request):
     instance_id = request.GET.get("instance_id")
@@ -921,6 +1346,7 @@ def mail_server_create_or_update(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_company")
 def company_create(request):
     """
@@ -957,6 +1383,7 @@ def company_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_company")
 def company_update(request, id, **kwargs):
     """
@@ -979,6 +1406,7 @@ def company_update(request, id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_department")
 def department_create(request):
     """
@@ -1003,6 +1431,7 @@ def department_create(request):
 
 
 @login_required
+@permission_required("base.view_department")
 def department_view(request):
     """
     This method view department
@@ -1018,6 +1447,7 @@ def department_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_department")
 def department_update(request, id, **kwargs):
     """
@@ -1065,6 +1495,7 @@ def job_position(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_jobposition")
 def job_position_creation(request):
     """
@@ -1074,9 +1505,16 @@ def job_position_creation(request):
     form = JobPositionForm()
     if request.method == "POST":
         form = JobPositionForm(request.POST)
-        if form.is_valid():
-            form.save()
-            messages.success(request, _("Job Position has been created successfully!"))
+        if form.instance.pk and form.is_valid():
+            form.save(commit=True)
+            messages.success(request, _("Job position has been created successfully!"))
+        elif (
+            not form.instance.pk
+            and form.data.getlist("department_id")
+            and form.data.get("job_position")
+        ):
+            form.save(commit=True)
+            messages.success(request, _("Job position has been created successfully!"))
             return HttpResponse("<script>window.location.reload()</script>")
     return render(
         request,
@@ -1089,6 +1527,7 @@ def job_position_creation(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_jobposition")
 def job_position_update(request, id, **kwargs):
     """
@@ -1102,7 +1541,7 @@ def job_position_update(request, id, **kwargs):
     if request.method == "POST":
         form = JobPositionForm(request.POST, instance=job_position)
         if form.is_valid():
-            form.save()
+            form.save(commit=True)
             messages.success(request, _("Job position updated."))
             return HttpResponse("<script>window.location.reload()</script>")
     return render(
@@ -1113,6 +1552,7 @@ def job_position_update(request, id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_jobrole")
 def job_role_create(request):
     """
@@ -1122,10 +1562,15 @@ def job_role_create(request):
     form = JobRoleForm()
     if request.method == "POST":
         form = JobRoleForm(request.POST)
-        if form.is_valid():
-            form.save()
-            form = JobRoleForm()
-
+        if form.instance.pk and form.is_valid():
+            form.save(commit=True)
+            messages.success(request, _("Job role has been created successfully!"))
+        elif (
+            not form.instance.pk
+            and form.data.getlist("job_position_id")
+            and form.data.get("job_role")
+        ):
+            form.save(commit=True)
             messages.success(request, _("Job role has been created successfully!"))
             return HttpResponse("<script>window.location.reload()</script>")
 
@@ -1159,6 +1604,7 @@ def job_role_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_jobrole")
 def job_role_update(request, id, **kwargs):
     """
@@ -1173,7 +1619,7 @@ def job_role_update(request, id, **kwargs):
     if request.method == "POST":
         form = JobRoleForm(request.POST, instance=job_role)
         if form.is_valid():
-            form.save()
+            form.save(commit=True)
             messages.success(request, _("Job role updated."))
             return HttpResponse("<script>window.location.reload()</script>")
 
@@ -1188,6 +1634,7 @@ def job_role_update(request, id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_worktype")
 def work_type_create(request):
     """
@@ -1228,6 +1675,7 @@ def work_type_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_worktype")
 def work_type_update(request, id, **kwargs):
     """
@@ -1253,6 +1701,7 @@ def work_type_update(request, id, **kwargs):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_rotatingworktype")
 def rotating_work_type_create(request):
     """
@@ -1289,6 +1738,7 @@ def rotating_work_type_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_rotatingworktype")
 def rotating_work_type_update(request, id, **kwargs):
     """
@@ -1356,6 +1806,7 @@ def rotating_work_type_assign(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.add_rotatingworktypeassign")
 def rotating_work_type_assign_add(request):
     """
@@ -1385,7 +1836,7 @@ def rotating_work_type_assign_add(request):
                 verb_es="Se le agrega al tipo de trabajo rotativo",
                 verb_fr="Vous êtes ajouté au type de travail rotatif",
                 icon="infinite",
-                redirect="/employee/employee-profile/",
+                redirect=reverse("employee-profile"),
             )
 
             messages.success(request, _("Rotating work type assigned."))
@@ -1405,6 +1856,7 @@ def rotating_work_type_assign_add(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.view_rotatingworktypeassign")
 def rotating_work_type_assign_view(request):
     """
@@ -1463,6 +1915,7 @@ def rotating_work_type_assign_view(request):
 
 
 @login_required
+@hx_request_required
 def rotating_work_individual_view(request, instance_id):
     """
     This view is used render detailed view of the rotating work type assign
@@ -1497,6 +1950,7 @@ def rotating_work_individual_view(request, instance_id):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.change_rotatingworktypeassign")
 def rotating_work_type_assign_update(request, id):
     """
@@ -1569,6 +2023,7 @@ def rotating_work_type_assign_redirect(request, obj_id, employee_id):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.change_rotatingworktypeassign")
 def rotating_work_type_assign_archive(request, obj_id):
     """
@@ -1669,6 +2124,7 @@ def rotating_work_type_assign_bulk_delete(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.delete_rotatingworktypeassign")
 @require_http_methods(["POST"])
 def rotating_work_type_assign_delete(request, obj_id):
@@ -1706,6 +2162,7 @@ def employee_type_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_employeetype")
 def employee_type_create(request):
     """
@@ -1729,6 +2186,7 @@ def employee_type_create(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_employeetype")
 def employee_type_update(request, id, **kwargs):
     """
@@ -1768,6 +2226,7 @@ def employee_shift_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_employeeshift")
 def employee_shift_create(request):
     """
@@ -1793,6 +2252,7 @@ def employee_shift_create(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_employeeshiftupdate")
 def employee_shift_update(request, id, **kwargs):
     """
@@ -1833,6 +2293,7 @@ def employee_shift_schedule_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_employeeshiftschedule")
 def employee_shift_schedule_create(request):
     """
@@ -1857,6 +2318,7 @@ def employee_shift_schedule_create(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_employeeshiftschedule")
 def employee_shift_schedule_update(request, id, **kwargs):
     """
@@ -1897,6 +2359,7 @@ def rotating_shift_view(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.add_rotatingshift")
 def rotating_shift_create(request):
     """
@@ -1911,7 +2374,8 @@ def rotating_shift_create(request):
             form = RotatingShiftForm()
             messages.success(request, _("Rotating shift created."))
             return HttpResponse("<script>window.location.reload();</script>")
-
+    else:
+        form = RotatingShiftForm()
     return render(
         request,
         "base/rotating_shift/htmx/rotating_shift_form.html",
@@ -1920,6 +2384,7 @@ def rotating_shift_create(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("base.change_rotatingshift")
 def rotating_shift_update(request, id, **kwargs):
     """
@@ -1991,6 +2456,7 @@ def rotating_shift_assign(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.add_rotatingshiftassign")
 def rotating_shift_assign_add(request):
     """
@@ -2020,7 +2486,7 @@ def rotating_shift_assign_add(request):
                 verb_es="Estás agregado a turno rotativo",
                 verb_fr="Vous êtes ajouté au quart de travail rotatif",
                 icon="infinite",
-                redirect="/employee/employee-profile/",
+                redirect=reverse("employee-profile"),
             )
 
             messages.success(request, _("Rotating shift assigned."))
@@ -2040,6 +2506,7 @@ def rotating_shift_assign_add(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.view_rotatingshiftassign")
 def rotating_shift_assign_view(request):
     """
@@ -2091,6 +2558,7 @@ def rotating_shift_assign_view(request):
 
 
 @login_required
+@hx_request_required
 def rotating_shift_individual_view(request, instance_id):
     """
     This view is used render detailed view of the rotating shit assign
@@ -2125,6 +2593,7 @@ def rotating_shift_individual_view(request, instance_id):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.change_rotatingshiftassign")
 def rotating_shift_assign_update(request, id):
     """
@@ -2202,6 +2671,7 @@ def rotating_shift_assign_redirect(request, obj_id, employee_id):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.change_rotatingshiftassign")
 def rotating_shift_assign_archive(request, obj_id):
     """
@@ -2302,6 +2772,7 @@ def rotating_shift_assign_bulk_delete(request):
 
 
 @login_required
+@hx_request_required
 @manager_can_enter("base.delete_rotatingshiftassign")
 @require_http_methods(["POST"])
 def rotating_shift_assign_delete(request, obj_id):
@@ -2467,6 +2938,7 @@ def update_permission(
 
 
 @login_required
+@hx_request_required
 @permission_required("auth.add_permission")
 def permission_table(request):
     """
@@ -2578,6 +3050,7 @@ def work_type_request_export(request):
 
 
 @login_required
+@hx_request_required
 def work_type_request_search(request):
     """
     This method is used to search work type request.
@@ -2587,11 +3060,13 @@ def work_type_request_search(request):
     field = request.GET.get("field")
     f = WorkTypeRequestFilter(request.GET)
     work_typ_requests = filtersubordinates(request, f.qs, "base.add_worktyperequest")
-    if set(WorkTypeRequest.objects.filter(employee_id=employee)).issubset(set(f.qs)):
-        work_typ_requests = work_typ_requests | WorkTypeRequest.objects.filter(
-            employee_id=employee
-        )
-    work_typ_requests = sortby(request, work_typ_requests, "orderby")
+    employee_work_requests = list(WorkTypeRequest.objects.filter(employee_id=employee))
+    subordinates_work_requests = list(work_typ_requests)
+    combined_requests = list(set(subordinates_work_requests + employee_work_requests))
+    combined_requests_qs = WorkTypeRequest.objects.filter(
+        id__in=[req.id for req in combined_requests]
+    )
+    work_typ_requests = sortby(request, combined_requests_qs, "orderby")
     template = "work_type_request/htmx/requests.html"
 
     if field != "" and field is not None:
@@ -2629,6 +3104,7 @@ def work_type_request_search(request):
 
 
 @login_required
+@hx_request_required
 def work_type_request(request):
     """
     This method is used to create request for work type  .
@@ -2693,14 +3169,32 @@ def work_type_request(request):
                     verb_fr=f"Vous avez une nouvelle demande de type de travail\
                             à valider pour {instance.employee_id}",
                     icon="information",
-                    redirect=f"/employee/work-type-request-view?id={instance.id}",
+                    redirect=reverse("work-type-request-view") + f"?id={instance.id}",
                 )
             except Exception as error:
                 pass
             messages.success(request, _("Work type request added."))
+            work_type_requests = WorkTypeRequest.objects.all()
+            if len(work_type_requests) == 1:
+                return HttpResponse("<script>window.location.reload()</script>")
             form = WorkTypeRequestForm()
     context["form"] = form
     return render(request, "work_type_request/request_form.html", context=context)
+
+
+def handle_wtr_redirect(request, work_type_request):
+    hx_request = request.META.get("HTTP_HX_REQUEST") == "true"
+    current_url = request.META.get("HTTP_HX_CURRENT_URL")
+    if hx_request:
+        if current_url:
+            if "/work-type-request-view/" in current_url:
+                return redirect(f"/work-type-request-search?{request.GET.urlencode()}")
+            elif "/employee-view/" in current_url:
+                return redirect(
+                    f"/employee/shift-tab/{work_type_request.employee_id.id}"
+                )
+        return HttpResponse("<script>window.location.reload()</script>")
+    return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
 @login_required
@@ -2712,33 +3206,42 @@ def work_type_request_cancel(request, id):
 
     """
     work_type_request = WorkTypeRequest.find(id)
-    if (
+    if not work_type_request:
+        messages.error(request, _("Work type request not found."))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+
+    if not (
         is_reportingmanger(request, work_type_request)
         or request.user.has_perm("base.cancel_worktyperequest")
         or work_type_request.employee_id == request.user.employee_get
         and work_type_request.approved == False
     ):
-        work_type_request.canceled = True
-        work_type_request.approved = False
+        messages.error(request, _("You don't have permission"))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+    work_type_request.canceled = True
+    work_type_request.approved = False
+    work_info = EmployeeWorkInformation.objects.filter(
+        employee_id=work_type_request.employee_id
+    )
+    if work_info.exists():
         work_type_request.employee_id.employee_work_info.work_type_id = (
             work_type_request.previous_work_type_id
         )
         work_type_request.employee_id.employee_work_info.save()
-        work_type_request.save()
-        messages.success(request, _("Work type request has been rejected."))
-        notify.send(
-            request.user.employee_get,
-            recipient=work_type_request.employee_id.employee_user_id,
-            verb="Your work type request has been rejected.",
-            verb_ar="تم إلغاء طلب نوع وظيفتك",
-            verb_de="Ihre Arbeitstypanfrage wurde storniert",
-            verb_es="Su solicitud de tipo de trabajo ha sido cancelada",
-            verb_fr="Votre demande de type de travail a été annulée",
-            redirect=f"/employee/work-type-request-view?id={work_type_request.id}",
-            icon="close",
-        )
-        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-    return HttpResponse("You dont have permission")
+    work_type_request.save()
+    messages.success(request, _("Work type request has been rejected."))
+    notify.send(
+        request.user.employee_get,
+        recipient=work_type_request.employee_id.employee_user_id,
+        verb="Your work type request has been rejected.",
+        verb_ar="تم إلغاء طلب نوع وظيفتك",
+        verb_de="Ihre Arbeitstypanfrage wurde storniert",
+        verb_es="Su solicitud de tipo de trabajo ha sido cancelada",
+        verb_fr="Votre demande de type de travail a été annulée",
+        redirect=reverse("work-type-request-view") + f"?id={work_type_request.id}",
+        icon="close",
+    )
+    return handle_wtr_redirect(request, work_type_request)
 
 
 @login_required
@@ -2774,7 +3277,8 @@ def work_type_request_bulk_cancel(request):
                 verb_de="Ihre Arbeitstypanfrage wurde storniert.",
                 verb_es="Su solicitud de tipo de trabajo ha sido cancelada.",
                 verb_fr="Votre demande de type de travail a été annulée.",
-                redirect=f"/employee/work-type-request-view?id={work_type_request.id}",
+                redirect=reverse("work-type-request-view")
+                + f"?id={work_type_request.id}",
                 icon="close",
             )
             result = True
@@ -2788,43 +3292,42 @@ def work_type_request_approve(request, id):
     """
 
     work_type_request = WorkTypeRequest.find(id)
-    if (
+    if not work_type_request:
+        messages.error(request, _("Work type request not found."))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+    if not (
         is_reportingmanger(request, work_type_request)
         or request.user.has_perm("approve_worktyperequest")
         or request.user.has_perm("change_worktyperequest")
         and not work_type_request.approved
     ):
-        """
-        Here the request will be approved, can send mail right here
-        """
-        if not work_type_request.is_any_work_type_request_exists():
-            work_type_request.approved = True
-            work_type_request.canceled = False
-            work_type_request.save()
-            messages.success(request, _("Work type request has been approved."))
-            notify.send(
-                request.user.employee_get,
-                recipient=work_type_request.employee_id.employee_user_id,
-                verb="Your work type request has been approved.",
-                verb_ar="تمت الموافقة على طلب نوع وظيفتك.",
-                verb_de="Ihre Arbeitstypanfrage wurde genehmigt.",
-                verb_es="Su solicitud de tipo de trabajo ha sido aprobada.",
-                verb_fr="Votre demande de type de travail a été approuvée.",
-                redirect=f"/employee/work-type-request-view?id={work_type_request.id}",
-                icon="checkmark",
-            )
-
-            return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-
-        else:
-            messages.error(
-                request,
-                _(
-                    "An approved work type request already exists during this time period."
-                ),
-            )
-            return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-    return HttpResponse("You Do nt Have Permission")
+        messages.error(request, _("You don't have permission"))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+    """
+    Here the request will be approved, can send mail right here
+    """
+    if not work_type_request.is_any_work_type_request_exists():
+        work_type_request.approved = True
+        work_type_request.canceled = False
+        work_type_request.save()
+        messages.success(request, _("Work type request has been approved."))
+        notify.send(
+            request.user.employee_get,
+            recipient=work_type_request.employee_id.employee_user_id,
+            verb="Your work type request has been approved.",
+            verb_ar="تمت الموافقة على طلب نوع وظيفتك.",
+            verb_de="Ihre Arbeitstypanfrage wurde genehmigt.",
+            verb_es="Su solicitud de tipo de trabajo ha sido aprobada.",
+            verb_fr="Votre demande de type de travail a été approuvée.",
+            redirect=reverse("work-type-request-view") + f"?id={work_type_request.id}",
+            icon="checkmark",
+        )
+    else:
+        messages.error(
+            request,
+            _("An approved work type request already exists during this time period."),
+        )
+    return handle_wtr_redirect(request, work_type_request)
 
 
 @login_required
@@ -2861,7 +3364,8 @@ def work_type_request_bulk_approve(request):
                 verb_de="Ihre Arbeitstypanfrage wurde genehmigt.",
                 verb_es="Su solicitud de tipo de trabajo ha sido aprobada.",
                 verb_fr="Votre demande de type de travail a été approuvée.",
-                redirect=f"/employee/work-type-request-view?id={work_type_request.id}",
+                redirect=reverse("work-type-request-view")
+                + f"?id={work_type_request.id}",
                 icon="checkmark",
             )
             result = True
@@ -2869,6 +3373,7 @@ def work_type_request_bulk_approve(request):
 
 
 @login_required
+@hx_request_required
 @work_type_request_change_permission()
 def work_type_request_update(request, work_type_request_id):
     """
@@ -2903,6 +3408,7 @@ def work_type_request_update(request, work_type_request_id):
 
 
 @login_required
+@hx_request_required
 @require_http_methods(["POST"])
 def work_type_request_delete(request, obj_id):
     """
@@ -2946,7 +3452,12 @@ def work_type_request_delete(request, obj_id):
         )
     elif hx_target and hx_target == "view-container":
         previous_data = request.GET.urlencode()
-        return redirect(f"/work-type-request-search?{previous_data}")
+        work_type_requests = WorkTypeRequest.objects.all()
+        if work_type_requests.exists():
+            return redirect(f"/work-type-request-search?{previous_data}")
+        else:
+            return HttpResponse("<script>window.location.reload()</script>")
+
     elif hx_target and hx_target == "shift_target" and employee:
         return redirect(f"/employee/shift-tab/{employee.id}")
     else:
@@ -3023,6 +3534,7 @@ def work_type_request_bulk_delete(request):
 
 
 @login_required
+@hx_request_required
 def shift_request(request):
     """
     This method is used to create shift request
@@ -3067,7 +3579,7 @@ def shift_request(request):
                     verb_fr=f"Vous avez une nouvelle demande de quart de\
                         travail à approuver pour {instance.employee_id}",
                     icon="information",
-                    redirect=f"/employee/shift-request-view?id={instance.id}",
+                    redirect=reverse("shift-request-view") + f"?id={instance.id}",
                 )
             except Exception as e:
                 pass
@@ -3085,26 +3597,23 @@ def shift_request(request):
 @login_required
 def update_employee_allocation(request):
 
-    shift = request.POST["shift_id"]
-
+    shift = request.GET.get("shift_id")
+    form = ShiftAllocationForm()
     shift = EmployeeShift.objects.filter(id=shift).first()
-
-    return JsonResponse(
-        {
-            "shift_name": shift.employee_shift,
-            "employee_data": list(
-                shift.employeeworkinformation_set.values_list(
-                    "employee_id",
-                    "employee_id__employee_first_name",
-                    "employee_id__employee_last_name",
-                    "employee_id__badge_id",
-                )
-            ),
-        }
+    employee_ids = shift.employeeworkinformation_set.values_list(
+        "employee_id", flat=True
     )
+    employees = Employee.objects.filter(id__in=employee_ids)
+    form.fields["reallocate_to"].queryset = employees
+    context = {"form": form}
+    html_template = render_to_string(
+        "shift_request/htmx/shift_reallocate_employees.html", context
+    )
+    return HttpResponse(html_template)
 
 
 @login_required
+@hx_request_required
 def shift_request_allocation(request):
     """
     This method is used to create shift request reallocation
@@ -3144,7 +3653,7 @@ def shift_request_allocation(request):
                     verb_es=f"Tienes una nueva solicitud de reasignación de turnos para aprobar para {instance.employee_id}.",
                     verb_fr=f"Vous avez une nouvelle demande de réaffectation de shift à approuver pour {instance.employee_id}.",
                     icon="information",
-                    redirect=f"/employee/shift-request-view?id={instance.id}",
+                    redirect=reverse("shift-request-view") + f"?id={instance.id}",
                 )
             except Exception as e:
                 pass
@@ -3159,7 +3668,7 @@ def shift_request_allocation(request):
                     verb_es=f"Tienes una nueva solicitud de reasignación de turnos de {instance.employee_id}.",
                     verb_fr=f"Vous avez une nouvelle demande de réaffectation de shift de {instance.employee_id}.",
                     icon="information",
-                    redirect=f"/employee/shift-request-view?id={instance.id}",
+                    redirect=reverse("shift-request-view") + f"?id={instance.id}",
                 )
             except Exception as e:
                 pass
@@ -3378,6 +3887,7 @@ def shift_request_search(request):
 
 
 @login_required
+@hx_request_required
 def shift_request_details(request, id):
     """
     This method is used to show shift request details in a modal
@@ -3404,6 +3914,7 @@ def shift_request_details(request, id):
 
 
 @login_required
+@hx_request_required
 def shift_allocation_request_details(request, id):
     """
     This method is used to show shift request details in a modal
@@ -3430,6 +3941,7 @@ def shift_allocation_request_details(request, id):
 
 
 @login_required
+@hx_request_required
 @shift_request_change_permission()
 def shift_request_update(request, shift_request_id):
     """
@@ -3505,7 +4017,7 @@ def shift_allocation_request_update(request, shift_request_id):
                     verb_es=f"Tienes una nueva solicitud de reasignación de turnos para aprobar para {instance.employee_id}.",
                     verb_fr=f"Vous avez une nouvelle demande de réaffectation de shift à approuver pour {instance.employee_id}.",
                     icon="information",
-                    redirect=f"/employee/shift-request-view?id={instance.id}",
+                    redirect=reverse("shift-request-view") + f"?id={instance.id}",
                 )
             except Exception as e:
                 pass
@@ -3520,7 +4032,7 @@ def shift_allocation_request_update(request, shift_request_id):
                     verb_es=f"Tienes una nueva solicitud de reasignación de turnos de {instance.employee_id}.",
                     verb_fr=f"Vous avez une nouvelle demande de réaffectation de shift de {instance.employee_id}.",
                     icon="information",
-                    redirect=f"/employee/shift-request-view?id={instance.id}",
+                    redirect=reverse("shift-request-view") + f"?id={instance.id}",
                 )
             except Exception as e:
                 pass
@@ -3544,53 +4056,57 @@ def shift_request_cancel(request, id):
     """
 
     shift_request = ShiftRequest.find(id)
-    if (
+    if not shift_request:
+        messages.error(request, _("Shift request not found."))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+    if not (
         is_reportingmanger(request, shift_request)
         or request.user.has_perm("base.cancel_shiftrequest")
         or shift_request.employee_id == request.user.employee_get
         and shift_request.approved == False
     ):
-        shift_request.canceled = True
-        shift_request.approved = False
+        messages.error(request, _("You don't have permission"))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
+    shift_request.canceled = True
+    shift_request.approved = False
+    work_info = EmployeeWorkInformation.objects.filter(
+        employee_id=shift_request.employee_id
+    )
+    if work_info.exists():
         shift_request.employee_id.employee_work_info.shift_id = (
             shift_request.previous_shift_id
         )
-
-        if shift_request.reallocate_to:
-            shift_request.reallocate_to.employee_work_info.shift_id = (
-                shift_request.shift_id
-            )
-            shift_request.reallocate_to.employee_work_info.save()
-
+    if shift_request.reallocate_to and work_info.exists():
+        shift_request.reallocate_to.employee_work_info.shift_id = shift_request.shift_id
+        shift_request.reallocate_to.employee_work_info.save()
+    if work_info.exists():
         shift_request.employee_id.employee_work_info.save()
-        shift_request.save()
-        messages.success(request, _("Shift request rejected"))
+    shift_request.save()
+    messages.success(request, _("Shift request rejected"))
+    notify.send(
+        request.user.employee_get,
+        recipient=shift_request.employee_id.employee_user_id,
+        verb="Your shift request has been canceled.",
+        verb_ar="تم إلغاء طلبك للوردية.",
+        verb_de="Ihr Schichtantrag wurde storniert.",
+        verb_es="Se ha cancelado su solicitud de turno.",
+        verb_fr="Votre demande de quart a été annulée.",
+        redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
+        icon="close",
+    )
+    if shift_request.reallocate_to:
         notify.send(
             request.user.employee_get,
-            recipient=shift_request.employee_id.employee_user_id,
-            verb="Your shift request has been canceled.",
+            recipient=shift_request.reallocate_to.employee_user_id,
+            verb="Your shift request has been rejected.",
             verb_ar="تم إلغاء طلبك للوردية.",
             verb_de="Ihr Schichtantrag wurde storniert.",
             verb_es="Se ha cancelado su solicitud de turno.",
             verb_fr="Votre demande de quart a été annulée.",
-            redirect=f"/employee/shift-request-view?id={shift_request.id}",
+            redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
             icon="close",
         )
-        if shift_request.reallocate_to:
-            notify.send(
-                request.user.employee_get,
-                recipient=shift_request.reallocate_to.employee_user_id,
-                verb="Your shift request has been rejected.",
-                verb_ar="تم إلغاء طلبك للوردية.",
-                verb_de="Ihr Schichtantrag wurde storniert.",
-                verb_es="Se ha cancelado su solicitud de turno.",
-                verb_fr="Votre demande de quart a été annulée.",
-                redirect=f"/employee/shift-request-view?id={shift_request.id}",
-                icon="close",
-            )
-
-        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-    return HttpResponse("You cant cancel the request")
+    return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
 @login_required
@@ -3606,10 +4122,14 @@ def shift_allocation_request_cancel(request, id):
 
     shift_request.reallocate_canceled = True
     shift_request.reallocate_approved = False
-    shift_request.employee_id.employee_work_info.shift_id = (
-        shift_request.previous_shift_id
+    work_info = EmployeeWorkInformation.objects.filter(
+        employee_id=shift_request.employee_id
     )
-    shift_request.employee_id.employee_work_info.save()
+    if work_info.exists():
+        shift_request.employee_id.employee_work_info.shift_id = (
+            shift_request.previous_shift_id
+        )
+        shift_request.employee_id.employee_work_info.save()
     shift_request.save()
     messages.success(request, _("Shift request canceled"))
     notify.send(
@@ -3620,7 +4140,7 @@ def shift_allocation_request_cancel(request, id):
         verb_de="Ihr Schichtantrag wurde storniert.",
         verb_es="Se ha cancelado su solicitud de turno.",
         verb_fr="Votre demande de quart a été annulée.",
-        redirect=f"/employee/shift-request-view?id={shift_request.id}",
+        redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
         icon="close",
     )
 
@@ -3668,7 +4188,7 @@ def shift_request_bulk_cancel(request):
                 verb_de="Ihr Schichtantrag wurde storniert.",
                 verb_es="Se ha cancelado su solicitud de turno.",
                 verb_fr="Votre demande de quart a été annulée.",
-                redirect=f"/employee/shift-request-view?id={shift_request.id}",
+                redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
                 icon="close",
             )
             if shift_request.reallocate_to:
@@ -3680,7 +4200,7 @@ def shift_request_bulk_cancel(request):
                     verb_de="Ihr Schichtantrag wurde storniert.",
                     verb_es="Se ha cancelado su solicitud de turno.",
                     verb_fr="Votre demande de quart a été annulée.",
-                    redirect=f"/employee/shift-request-view?id={shift_request.id}",
+                    redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
                     icon="close",
                 )
             result = True
@@ -3691,66 +4211,63 @@ def shift_request_bulk_cancel(request):
 @manager_can_enter("base.change_shiftrequest")
 def shift_request_approve(request, id):
     """
-    This method is used to approve shift request
+    Approve shift request
     args:
         id : shift request instance id
     """
 
     shift_request = ShiftRequest.find(id)
+    if not shift_request:
+        messages.error(request, _("Shift request not found."))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
-    if (
+    user = request.user
+    if not (
         is_reportingmanger(request, shift_request)
-        or request.user.has_perm("approve_shiftrequest")
-        or request.user.has_perm("change_shiftrequest")
+        or user.has_perm("approve_shiftrequest")
+        or user.has_perm("change_shiftrequest")
         and not shift_request.approved
     ):
-        """
-        here the request will be approved, can send mail right here
-        """
+        messages.error(request, _("You don't have permission"))
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
-        if not shift_request.is_any_request_exists():
-            shift_request.approved = True
-            shift_request.canceled = False
+    if shift_request.is_any_request_exists():
+        messages.error(
+            request,
+            _("An approved shift request already exists during this time period."),
+        )
+        return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
-            if shift_request.reallocate_to:
-                shift_request.reallocate_to.employee_work_info.shift_id = (
-                    shift_request.previous_shift_id
-                )
-                shift_request.reallocate_to.employee_work_info.save()
+    shift_request.approved = True
+    shift_request.canceled = False
 
-            shift_request.save()
-            messages.success(request, _("Shift has been approved."))
-            notify.send(
-                request.user.employee_get,
-                recipient=shift_request.employee_id.employee_user_id,
-                verb="Your shift request has been approved.",
-                verb_ar="تمت الموافقة على طلبك للوردية.",
-                verb_de="Ihr Schichtantrag wurde genehmigt.",
-                verb_es="Se ha aprobado su solicitud de turno.",
-                verb_fr="Votre demande de quart a été approuvée.",
-                redirect=f"/employee/shift-request-view?id={shift_request.id}",
-                icon="checkmark",
-            )
-            if shift_request.reallocate_to:
-                notify.send(
-                    request.user.employee_get,
-                    recipient=shift_request.reallocate_to.employee_user_id,
-                    verb="Your shift request has been approved.",
-                    verb_ar="تمت الموافقة على طلبك للوردية.",
-                    verb_de="Ihr Schichtantrag wurde genehmigt.",
-                    verb_es="Se ha aprobado su solicitud de turno.",
-                    verb_fr="Votre demande de quart a été approuvée.",
-                    redirect=f"/employee/shift-request-view?id={shift_request.id}",
-                    icon="checkmark",
-                )
-            return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-        else:
-            messages.error(
-                request,
-                _("An apporved shift request already exists during this time period."),
-            )
-            return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
-    return HttpResponse("You Dont Have Permission")
+    if shift_request.reallocate_to:
+        shift_request.reallocate_to.employee_work_info.shift_id = (
+            shift_request.previous_shift_id
+        )
+        shift_request.reallocate_to.employee_work_info.save()
+
+    shift_request.save()
+    messages.success(request, _("Shift has been approved."))
+
+    recipients = [shift_request.employee_id.employee_user_id]
+    if shift_request.reallocate_to:
+        recipients.append(shift_request.reallocate_to.employee_user_id)
+
+    for recipient in recipients:
+        notify.send(
+            user.employee_get,
+            recipient=recipient,
+            verb="Your shift request has been approved.",
+            verb_ar="تمت الموافقة على طلبك للوردية.",
+            verb_de="Ihr Schichtantrag wurde genehmigt.",
+            verb_es="Se ha aprobado su solicitud de turno.",
+            verb_fr="Votre demande de quart a été approuvée.",
+            redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
+            icon="checkmark",
+        )
+
+    return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
 @login_required
@@ -3776,7 +4293,7 @@ def shift_allocation_request_approve(request, id):
             verb_de=f"{request.user.employee_get} steht für die Verschiebung der Schichtzuteilung zur Verfügung.",
             verb_es=f"{request.user.employee_get} está disponible para la reasignación de turnos.",
             verb_fr=f"{request.user.employee_get} est disponible pour la réaffectation de shift.",
-            redirect=f"/employee/shift-request-view?id={shift_request.id}",
+            redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
             icon="checkmark",
         )
         return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
@@ -3831,7 +4348,7 @@ def shift_request_bulk_approve(request):
                 verb_de="Ihr Schichtantrag wurde genehmigt.",
                 verb_es="Se ha aprobado su solicitud de turno.",
                 verb_fr="Votre demande de quart a été approuvée.",
-                redirect=f"/employee/shift-request-view?id={shift_request.id}",
+                redirect=reverse("shift-request-view") + f"?id={shift_request.id}",
                 icon="checkmark",
             )
         result = True
@@ -4049,7 +4566,7 @@ def general_settings(request):
     encashment_form = EncashmentGeneralSettingsForm(instance=encashment_instance)
     history_tracking_instance = HistoryTrackingFields.objects.first()
     history_fields_form_initial = {}
-    if history_tracking_instance:
+    if history_tracking_instance and history_tracking_instance.tracking_fields:
         history_fields_form_initial = {
             "tracking_fields": history_tracking_instance.tracking_fields[
                 "tracking_fields"
@@ -4078,6 +4595,7 @@ def general_settings(request):
             "pagination_form": pagination_form,
             "encashment_form": encashment_form,
             "history_fields_form": history_fields_form,
+            "history_tracking_instance": history_tracking_instance,
             "enabled_block_unblock": enabled_block_unblock,
         },
     )
@@ -4220,12 +4738,18 @@ def get_time_format(request):
 def history_field_settings(request):
     if request.method == "POST":
         fields = request.POST.getlist("tracking_fields")
+        check = request.POST.get("work_info_track")
         history_object, created = HistoryTrackingFields.objects.get_or_create(
             pk=1, defaults={"tracking_fields": {"tracking_fields": fields}}
         )
 
         if not created:
             history_object.tracking_fields = {"tracking_fields": fields}
+            if check == "on":
+                history_object.work_info_track = True
+            else:
+                history_object.work_info_track = False
+            messages.success(request, _("Settings updated."))
             history_object.save()
 
     return redirect(general_settings)
@@ -4241,6 +4765,7 @@ def enable_account_block_unblock(request):
         if AccountBlockUnblock.objects.exists():
             instance = AccountBlockUnblock.objects.first()
             instance.is_enabled = enabled
+            messages.success(request, _("Settings updated."))
             instance.save()
         else:
             AccountBlockUnblock.objects.create(is_enabled=enabled)
@@ -4305,6 +4830,7 @@ def validation_condition_create(request):
 
 
 @login_required
+@hx_request_required
 @permission_required("attendance.change_attendancevalidationcondition")
 def validation_condition_update(request, obj_id):
     """
@@ -4505,6 +5031,7 @@ def rotating_work_type_select_filter(request):
 
 
 @login_required
+@permission_required("helpdesk.view_tickettype")
 def ticket_type_view(request):
     """
     This method is used to show Ticket type
@@ -4516,6 +5043,8 @@ def ticket_type_view(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("helpdesk.create_tickettype")
 def ticket_type_create(request):
     """
     This method renders form and template to create Ticket type
@@ -4550,6 +5079,8 @@ def ticket_type_create(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("helpdesk.update_tickettype")
 def ticket_type_update(request, t_type_id):
     """
     This method renders form and template to create Ticket type
@@ -4571,13 +5102,20 @@ def ticket_type_update(request, t_type_id):
 
 
 @login_required
+@require_http_methods(["POST", "DELETE"])
+@permission_required("helpdesk.delete_tickettype")
 def ticket_type_delete(request, t_type_id):
-    TicketType.objects.get(id=t_type_id).delete()
-    messages.success(request, _("Ticket type has been deleted successfully!"))
+    ticket_type = TicketType.find(t_type_id)
+    if ticket_type:
+        ticket_type.delete()
+        messages.success(request, _("Ticket type has been deleted successfully!"))
+    else:
+        messages.error(request, _("Ticket type not found"))
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
 @login_required
+@permission_required("horilla_audit.view_audittag")
 def tag_view(request):
     """
     This method is used to show Audit tags
@@ -4591,6 +5129,7 @@ def tag_view(request):
 
 
 @login_required
+@permission_required("employee.view_employeetag")
 def employee_tag_view(request):
     """
     This method is used to Employee tags
@@ -4604,6 +5143,7 @@ def employee_tag_view(request):
 
 
 @login_required
+@permission_required("helpdesk.view_tag")
 def helpdesk_tag_view(request):
     """
     This method is used to show Help desk tags
@@ -4617,6 +5157,8 @@ def helpdesk_tag_view(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("helpdesk.add_tag")
 def tag_create(request):
     """
     This method renders form and template to create Ticket type
@@ -4639,6 +5181,8 @@ def tag_create(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("helpdesk.change_tag")
 def tag_update(request, tag_id):
     """
     This method renders form and template to create Ticket type
@@ -4660,6 +5204,8 @@ def tag_update(request, tag_id):
 
 
 @login_required
+@hx_request_required
+@permission_required("employee.add_employeetag")
 def employee_tag_create(request):
     """
     This method renders form and template to create Ticket type
@@ -4682,6 +5228,8 @@ def employee_tag_create(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("employee.add_employeetag")
 def employee_tag_update(request, tag_id):
     """
     This method renders form and template to create Ticket type
@@ -4703,6 +5251,8 @@ def employee_tag_update(request, tag_id):
 
 
 @login_required
+@hx_request_required
+@permission_required("horilla_audit.add_audittag")
 def audit_tag_create(request):
     """
     This method renders form and template to create Ticket type
@@ -4725,6 +5275,8 @@ def audit_tag_create(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("horilla_audit.change_audittag")
 def audit_tag_update(request, tag_id):
     """
     This method renders form and template to create Ticket type
@@ -4746,18 +5298,100 @@ def audit_tag_update(request, tag_id):
 
 
 @login_required
+@permission_required("base.view_multipleapprovalcondition")
 def multiple_approval_condition(request):
     form = MultipleApproveConditionForm()
     conditions = MultipleApprovalCondition.objects.all().order_by("department")[::-1]
     create = True
     return render(
         request,
-        "leave/leave_request/penalty/condition.html",
+        "multi_approval_condition/condition.html",
         {"form": form, "conditions": conditions, "create": create},
     )
 
 
 @login_required
+@hx_request_required
+@permission_required("base.view_multipleapprovalcondition")
+def hx_multiple_approval_condition(request):
+    conditions = MultipleApprovalCondition.objects.all().order_by("department")[::-1]
+    return render(
+        request,
+        "multi_approval_condition/condition_table.html",
+        {"conditions": conditions},
+    )
+
+
+@login_required
+@hx_request_required
+@permission_required("base.add_multipleapprovalcondition")
+def get_condition_value_fields(request):
+    operator = request.GET.get("condition_operator")
+    form = MultipleApproveConditionForm()
+    is_range = True if operator and operator == "range" else False
+    context = {"form": form, "range": is_range}
+    field_html = render_to_string(
+        "multi_approval_condition/condition_value_fields.html", context
+    )
+    return HttpResponse(field_html)
+
+
+@login_required
+@hx_request_required
+@permission_required("base.add_multipleapprovalcondition")
+def add_more_approval_managers(request):
+    currnet_hx_target = request.META.get("HTTP_HX_TARGET")
+    hx_target_split = currnet_hx_target.split("_")
+    next_hx_target = "_".join([hx_target_split[0], str(int(hx_target_split[-1]) + 1)])
+
+    form = MultipleApproveConditionForm()
+    managers_count = request.GET.get("managers_count")
+    context = {
+        "next_hx_target": next_hx_target,
+        "currnet_hx_target": currnet_hx_target,
+    }
+    if managers_count:
+        managers_count = int(managers_count) + 1
+        field_name = f"multi_approval_manager_{managers_count}"
+        form.fields[field_name] = forms.ModelChoiceField(
+            queryset=Employee.objects.all(),
+            widget=forms.Select(
+                attrs={
+                    "class": "oh-select oh-select-2 mb-3",
+                    "name": field_name,
+                    "id": f"id_{field_name}",
+                }
+            ),
+            required=False,
+        )
+        context["managers_count"] = managers_count
+        context["field_html"] = form[field_name].as_widget()
+    else:
+        form.fields["multi_approval_manager"].widget.attrs.update(
+            {
+                "name": f"multi_approval_manager_{str(int(hx_target_split[-1]) + 1)}",
+                "id": f"id_multi_approval_manager_{str(int(hx_target_split[-1]) + 1)}",
+            }
+        )
+        context["form"] = form
+
+    field_html = render_to_string(
+        "multi_approval_condition/add_more_approval_manager.html", context
+    )
+
+    return HttpResponse(field_html)
+
+
+@login_required
+@hx_request_required
+@permission_required("base.add_multipleapprovalcondition")
+def remove_approval_manager(request):
+    return HttpResponse()
+
+
+@login_required
+@hx_request_required
+@permission_required("base.add_multipleapprovalcondition")
 def multiple_level_approval_create(request):
     form = MultipleApproveConditionForm()
     create = True
@@ -4769,6 +5403,7 @@ def multiple_level_approval_create(request):
         condition_value = request.POST.get("condition_value")
         condition_start_value = request.POST.get("condition_start_value")
         condition_end_value = request.POST.get("condition_end_value")
+        condition_approval_managers = request.POST.getlist("multi_approval_manager")
         department = Department.objects.get(id=dept_id)
         instance = MultipleApprovalCondition()
         if form.is_valid():
@@ -4785,22 +5420,22 @@ def multiple_level_approval_create(request):
                 instance.condition_end_value = condition_end_value
             instance.save()
             sequence = 0
-            for key, value in request.POST.items():
-                if key.startswith("multi_approval_manager"):
-                    if value:
-                        sequence += 1
-                        employee_id = int(value)
-                        MultipleApprovalManagers.objects.create(
-                            condition_id=instance,
-                            sequence=sequence,
-                            employee_id=employee_id,
-                        )
+            for emp_id in condition_approval_managers:
+                sequence += 1
+                employee_id = int(emp_id)
+                MultipleApprovalManagers.objects.create(
+                    condition_id=instance,
+                    sequence=sequence,
+                    employee_id=employee_id,
+                )
             form = MultipleApproveConditionForm()
-    conditions = MultipleApprovalCondition.objects.all().order_by("department")[::-1]
+            messages.success(
+                request, _("Multiple approval condition created successfully")
+            )
     return render(
         request,
-        "leave/leave_request/penalty/create.html",
-        {"form": form, "conditions": conditions, "create": create},
+        "multi_approval_condition/condition_create_form.html",
+        {"form": form, "create": create},
     )
 
 
@@ -4820,15 +5455,9 @@ def edit_approval_managers(form, managers):
     return form
 
 
-def clear_form_fields_and_remove_extra_fields(form, managers):
-    for i, _ in enumerate(managers, start=1):
-        field_name = f"multi_approval_manager_{i}"
-        if field_name in form.cleaned_data:
-            del form.cleaned_data[field_name]
-            form.fields.pop(field_name, None)
-
-
 @login_required
+@hx_request_required
+@permission_required("base.change_multipleapprovalcondition")
 def multiple_level_approval_edit(request, condition_id):
     create = False
     condition = MultipleApprovalCondition.objects.get(id=condition_id)
@@ -4840,65 +5469,50 @@ def multiple_level_approval_edit(request, condition_id):
     if request.method == "POST":
         form = MultipleApproveConditionForm(request.POST, instance=condition)
         if form.is_valid():
-            form.save()
+            instance = form.save()
             sequence = 0
+            MultipleApprovalManagers.objects.filter(condition_id=condition).delete()
             for key, value in request.POST.items():
                 if key.startswith("multi_approval_manager"):
                     sequence += 1
-                    if value:
-                        employee_id = int(value)
-                        instance = MultipleApprovalManagers.objects.filter(
-                            condition_id=condition,
-                            sequence=sequence,
-                        )
-                        if instance:
-                            instance.update(employee_id=employee_id)
-                        else:
-                            MultipleApprovalManagers.objects.create(
-                                condition_id=condition,
-                                sequence=sequence,
-                                employee_id=employee_id,
-                            )
-                    else:
-                        MultipleApprovalManagers.objects.filter(
-                            condition_id=condition, sequence=sequence
-                        ).delete()
-                        managers_sequence = MultipleApprovalManagers.objects.filter(
-                            condition_id=condition, sequence__gt=sequence
-                        ).order_by("sequence")
-
-                        for upt_manager in managers_sequence:
-                            upt_manager.sequence = F("sequence") - 1
-                            upt_manager.save()
-                        sequence -= 1
+                    employee_id = int(value)
+                    MultipleApprovalManagers.objects.create(
+                        condition_id=instance,
+                        sequence=sequence,
+                        employee_id=employee_id,
+                    )
             return HttpResponse("<script>window.location.reload()</script>")
 
     conditions = MultipleApprovalCondition.objects.all().order_by("department")[::-1]
     return render(
         request,
-        "leave/leave_request/penalty/create.html",
+        "multi_approval_condition/condition_edit_form.html",
         {
             "form": form,
             "conditions": conditions,
             "create": create,
             "condition": condition,
+            "managers_count": len(managers),
         },
     )
 
 
 @login_required
+@permission_required("base.delete_multipleapprovalcondition")
 def multiple_level_approval_delete(request, condition_id):
     condition = MultipleApprovalCondition.objects.get(id=condition_id)
     condition.delete()
-    return redirect(multiple_approval_condition)
+    messages.success(request, _("Multiple approval condition deleted successfully"))
+    return redirect(hx_multiple_approval_condition)
 
 
 @login_required
+@hx_request_required
 def create_shiftrequest_comment(request, shift_id):
     """
     This method renders form and template to create shift request comments
     """
-    shift = ShiftRequest.objects.filter(id=shift_id).first()
+    shift = ShiftRequest.find(shift_id)
     emp = request.user.employee_get
     form = ShiftRequestCommentForm(
         initial={"employee_id": emp.id, "request_id": shift_id}
@@ -4920,27 +5534,62 @@ def create_shiftrequest_comment(request, shift_id):
                 initial={"employee_id": emp.id, "request_id": shift_id}
             )
             messages.success(request, _("Comment added successfully!"))
-
-            if shift.employee_id.employee_work_info.reporting_manager_id is not None:
-                if request.user.employee_get.id == shift.employee_id.id:
-                    rec = (
-                        shift.employee_id.employee_work_info.reporting_manager_id.employee_user_id
-                    )
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=rec,
-                        verb=f"{shift.employee_id}'s shift request has received a comment.",
-                        verb_ar=f"تلقت طلب تحويل {shift.employee_id} تعليقًا.",
-                        verb_de=f"{shift.employee_id}s Schichtantrag hat einen Kommentar erhalten.",
-                        verb_es=f"La solicitud de turno de {shift.employee_id} ha recibido un comentario.",
-                        verb_fr=f"La demande de changement de poste de {shift.employee_id} a reçu un commentaire.",
-                        redirect=f"/employee/shift-request-view?id={shift.id}",
-                        icon="chatbox-ellipses",
-                    )
-                elif (
-                    request.user.employee_get.id
-                    == shift.employee_id.employee_work_info.reporting_manager_id.id
+            work_info = EmployeeWorkInformation.objects.filter(
+                employee_id=shift.employee_id
+            )
+            if work_info.exists():
+                if (
+                    shift.employee_id.employee_work_info.reporting_manager_id
+                    is not None
                 ):
+                    if request.user.employee_get.id == shift.employee_id.id:
+                        rec = (
+                            shift.employee_id.employee_work_info.reporting_manager_id.employee_user_id
+                        )
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb=f"{shift.employee_id}'s shift request has received a comment.",
+                            verb_ar=f"تلقت طلب تحويل {shift.employee_id} تعليقًا.",
+                            verb_de=f"{shift.employee_id}s Schichtantrag hat einen Kommentar erhalten.",
+                            verb_es=f"La solicitud de turno de {shift.employee_id} ha recibido un comentario.",
+                            verb_fr=f"La demande de changement de poste de {shift.employee_id} a reçu un commentaire.",
+                            redirect=reverse("shift-request-view") + f"?id={shift.id}",
+                            icon="chatbox-ellipses",
+                        )
+                    elif (
+                        request.user.employee_get.id
+                        == shift.employee_id.employee_work_info.reporting_manager_id.id
+                    ):
+                        rec = shift.employee_id.employee_user_id
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb="Your shift request has received a comment.",
+                            verb_ar="تلقت طلبك للتحول تعليقًا.",
+                            verb_de="Ihr Schichtantrag hat einen Kommentar erhalten.",
+                            verb_es="Tu solicitud de turno ha recibido un comentario.",
+                            verb_fr="Votre demande de changement de poste a reçu un commentaire.",
+                            redirect=reverse("shift-request-view") + f"?id={shift.id}",
+                            icon="chatbox-ellipses",
+                        )
+                    else:
+                        rec = [
+                            shift.employee_id.employee_user_id,
+                            shift.employee_id.employee_work_info.reporting_manager_id.employee_user_id,
+                        ]
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb=f"{shift.employee_id}'s shift request has received a comment.",
+                            verb_ar=f"تلقت طلب تحويل {shift.employee_id} تعليقًا.",
+                            verb_de=f"{shift.employee_id}s Schichtantrag hat einen Kommentar erhalten.",
+                            verb_es=f"La solicitud de turno de {shift.employee_id} ha recibido un comentario.",
+                            verb_fr=f"La demande de changement de poste de {shift.employee_id} a reçu un commentaire.",
+                            redirect=reverse("shift-request-view") + f"?id={shift.id}",
+                            icon="chatbox-ellipses",
+                        )
+                else:
                     rec = shift.employee_id.employee_user_id
                     notify.send(
                         request.user.employee_get,
@@ -4950,38 +5599,9 @@ def create_shiftrequest_comment(request, shift_id):
                         verb_de="Ihr Schichtantrag hat einen Kommentar erhalten.",
                         verb_es="Tu solicitud de turno ha recibido un comentario.",
                         verb_fr="Votre demande de changement de poste a reçu un commentaire.",
-                        redirect=f"/employee/shift-request-view?id={shift.id}",
+                        redirect=reverse("shift-request-view") + f"?id={shift.id}",
                         icon="chatbox-ellipses",
                     )
-                else:
-                    rec = [
-                        shift.employee_id.employee_user_id,
-                        shift.employee_id.employee_work_info.reporting_manager_id.employee_user_id,
-                    ]
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=rec,
-                        verb=f"{shift.employee_id}'s shift request has received a comment.",
-                        verb_ar=f"تلقت طلب تحويل {shift.employee_id} تعليقًا.",
-                        verb_de=f"{shift.employee_id}s Schichtantrag hat einen Kommentar erhalten.",
-                        verb_es=f"La solicitud de turno de {shift.employee_id} ha recibido un comentario.",
-                        verb_fr=f"La demande de changement de poste de {shift.employee_id} a reçu un commentaire.",
-                        redirect=f"/employee/shift-request-view?id={shift.id}",
-                        icon="chatbox-ellipses",
-                    )
-            else:
-                rec = shift.employee_id.employee_user_id
-                notify.send(
-                    request.user.employee_get,
-                    recipient=rec,
-                    verb="Your shift request has received a comment.",
-                    verb_ar="تلقت طلبك للتحول تعليقًا.",
-                    verb_de="Ihr Schichtantrag hat einen Kommentar erhalten.",
-                    verb_es="Tu solicitud de turno ha recibido un comentario.",
-                    verb_fr="Votre demande de changement de poste a reçu un commentaire.",
-                    redirect=f"/employee/shift-request-view?id={shift.id}",
-                    icon="chatbox-ellipses",
-                )
             return render(
                 request,
                 "shift_request/htmx/shift_comment.html",
@@ -4999,6 +5619,7 @@ def create_shiftrequest_comment(request, shift_id):
 
 
 @login_required
+@hx_request_required
 def view_shift_comment(request, shift_id):
     """
     This method is used to render all the notes of the employee
@@ -5055,6 +5676,7 @@ def delete_shift_comment_file(request):
 
 
 @login_required
+@hx_request_required
 def view_work_type_comment(request, work_type_id):
     """
     This method is used to render all the notes of the employee
@@ -5109,18 +5731,22 @@ def delete_work_type_comment_file(request):
 
 
 @login_required
+@hx_request_required
 def delete_shiftrequest_comment(request, comment_id):
     """
     This method is used to delete shift request comments
     """
-    comment = ShiftRequestComment.objects.get(id=comment_id)
-    shift_id = comment.request_id.id
+    comment = ShiftRequestComment.objects.filter(id=comment_id)
+    if not request.user.has_perm("base.delete_shiftrequestcomment"):
+        comment = comment.filter(employee_id__employee_user_id=request.user)
+    shift_id = comment.first().request_id.id
     comment.delete()
     messages.success(request, _("Comment deleted successfully!"))
     return redirect("view-shift-comment", shift_id=shift_id)
 
 
 @login_required
+@hx_request_required
 def create_worktyperequest_comment(request, worktype_id):
     """
     This method renders form and template to create Work type request comments
@@ -5148,29 +5774,65 @@ def create_worktyperequest_comment(request, worktype_id):
             )
             messages.success(request, _("Comment added successfully!"))
 
-            if (
-                work_type.employee_id.employee_work_info.reporting_manager_id
-                is not None
-            ):
-                if request.user.employee_get.id == work_type.employee_id.id:
-                    rec = (
-                        work_type.employee_id.employee_work_info.reporting_manager_id.employee_user_id
-                    )
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=rec,
-                        verb=f"{work_type.employee_id}'s work type request has received a comment.",
-                        verb_ar=f"تلقت طلب نوع العمل {work_type.employee_id} تعليقًا.",
-                        verb_de=f"{work_type.employee_id}s Arbeitsart-Antrag hat einen Kommentar erhalten.",
-                        verb_es=f"La solicitud de tipo de trabajo de {work_type.employee_id} ha recibido un comentario.",
-                        verb_fr=f"La demande de type de travail de {work_type.employee_id} a reçu un commentaire.",
-                        redirect=f"/employee/work-type-request-view?id={work_type.id}",
-                        icon="chatbox-ellipses",
-                    )
-                elif (
-                    request.user.employee_get.id
-                    == work_type.employee_id.employee_work_info.reporting_manager_id.id
+            work_info = EmployeeWorkInformation.objects.filter(
+                employee_id=work_type.employee_id
+            )
+            if work_info.exists():
+                if (
+                    work_type.employee_id.employee_work_info.reporting_manager_id
+                    is not None
                 ):
+                    if request.user.employee_get.id == work_type.employee_id.id:
+                        rec = (
+                            work_type.employee_id.employee_work_info.reporting_manager_id.employee_user_id
+                        )
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb=f"{work_type.employee_id}'s work type request has received a comment.",
+                            verb_ar=f"تلقت طلب نوع العمل {work_type.employee_id} تعليقًا.",
+                            verb_de=f"{work_type.employee_id}s Arbeitsart-Antrag hat einen Kommentar erhalten.",
+                            verb_es=f"La solicitud de tipo de trabajo de {work_type.employee_id} ha recibido un comentario.",
+                            verb_fr=f"La demande de type de travail de {work_type.employee_id} a reçu un commentaire.",
+                            redirect=reverse("work-type-request-view")
+                            + f"?id={work_type.id}",
+                            icon="chatbox-ellipses",
+                        )
+                    elif (
+                        request.user.employee_get.id
+                        == work_type.employee_id.employee_work_info.reporting_manager_id.id
+                    ):
+                        rec = work_type.employee_id.employee_user_id
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb="Your work type request has received a comment.",
+                            verb_ar="تلقى طلب نوع العمل الخاص بك تعليقًا.",
+                            verb_de="Ihr Arbeitsart-Antrag hat einen Kommentar erhalten.",
+                            verb_es="Tu solicitud de tipo de trabajo ha recibido un comentario.",
+                            verb_fr="Votre demande de type de travail a reçu un commentaire.",
+                            redirect=reverse("work-type-request-view")
+                            + f"?id={work_type.id}",
+                            icon="chatbox-ellipses",
+                        )
+                    else:
+                        rec = [
+                            work_type.employee_id.employee_user_id,
+                            work_type.employee_id.employee_work_info.reporting_manager_id.employee_user_id,
+                        ]
+                        notify.send(
+                            request.user.employee_get,
+                            recipient=rec,
+                            verb=f"{work_type.employee_id}'s work type request has received a comment.",
+                            verb_ar=f"تلقت طلب نوع العمل {work_type.employee_id} تعليقًا.",
+                            verb_de=f"{work_type.employee_id}s Arbeitsart-Antrag hat einen Kommentar erhalten.",
+                            verb_es=f"La solicitud de tipo de trabajo de {work_type.employee_id} ha recibido un comentario.",
+                            verb_fr=f"La demande de type de travail de {work_type.employee_id} a reçu un commentaire.",
+                            redirect=reverse("work-type-request-view")
+                            + f"?id={work_type.id}",
+                            icon="chatbox-ellipses",
+                        )
+                else:
                     rec = work_type.employee_id.employee_user_id
                     notify.send(
                         request.user.employee_get,
@@ -5180,38 +5842,10 @@ def create_worktyperequest_comment(request, worktype_id):
                         verb_de="Ihr Arbeitsart-Antrag hat einen Kommentar erhalten.",
                         verb_es="Tu solicitud de tipo de trabajo ha recibido un comentario.",
                         verb_fr="Votre demande de type de travail a reçu un commentaire.",
-                        redirect=f"/employee/work-type-request-view?id={work_type.id}",
+                        redirect=reverse("work-type-request-view")
+                        + f"?id={work_type.id}",
                         icon="chatbox-ellipses",
                     )
-                else:
-                    rec = [
-                        work_type.employee_id.employee_user_id,
-                        work_type.employee_id.employee_work_info.reporting_manager_id.employee_user_id,
-                    ]
-                    notify.send(
-                        request.user.employee_get,
-                        recipient=rec,
-                        verb=f"{work_type.employee_id}'s work type request has received a comment.",
-                        verb_ar=f"تلقت طلب نوع العمل {work_type.employee_id} تعليقًا.",
-                        verb_de=f"{work_type.employee_id}s Arbeitsart-Antrag hat einen Kommentar erhalten.",
-                        verb_es=f"La solicitud de tipo de trabajo de {work_type.employee_id} ha recibido un comentario.",
-                        verb_fr=f"La demande de type de travail de {work_type.employee_id} a reçu un commentaire.",
-                        redirect=f"/employee/work-type-request-view?id={work_type.id}",
-                        icon="chatbox-ellipses",
-                    )
-            else:
-                rec = work_type.employee_id.employee_user_id
-                notify.send(
-                    request.user.employee_get,
-                    recipient=rec,
-                    verb="Your work type request has received a comment.",
-                    verb_ar="تلقى طلب نوع العمل الخاص بك تعليقًا.",
-                    verb_de="Ihr Arbeitsart-Antrag hat einen Kommentar erhalten.",
-                    verb_es="Tu solicitud de tipo de trabajo ha recibido un comentario.",
-                    verb_fr="Votre demande de type de travail a reçu un commentaire.",
-                    redirect=f"/employee/work-type-request-view?id={work_type.id}",
-                    icon="chatbox-ellipses",
-                )
             return render(
                 request,
                 "work_type_request/htmx/work_type_comment.html",
@@ -5229,12 +5863,15 @@ def create_worktyperequest_comment(request, worktype_id):
 
 
 @login_required
+@hx_request_required
 def delete_worktyperequest_comment(request, comment_id):
     """
     This method is used to delete Work type request comments
     """
-    comment = WorkTypeRequestComment.objects.get(id=comment_id)
-    worktype_id = comment.request_id.id
+    comment = WorkTypeRequestComment.objects.filter(id=comment_id)
+    if not request.user.has_perm("base.delete_worktyperequestcomment"):
+        comment = comment.filter(employee_id__employee_user_id=request.user)
+    worktype_id = comment.first().request_id.id
     comment.delete()
     messages.success(request, _("Comment deleted successfully!"))
     return redirect("view-work-type-comment", work_type_id=worktype_id)
@@ -5263,6 +5900,7 @@ def pagination_settings_view(request):
 
 
 @login_required
+@permission_required("base.view_actiontype")
 def action_type_view(request):
     """
     This method is used to show Action Type
@@ -5274,6 +5912,8 @@ def action_type_view(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("base.add_actiontype")
 def action_type_create(request):
     """
     This method renders form and template to create Action Type
@@ -5310,6 +5950,8 @@ def action_type_create(request):
 
 
 @login_required
+@hx_request_required
+@permission_required("base.change_actiontype")
 def action_type_update(request, act_id):
     """
     This method renders form and template to update Action type
@@ -5339,6 +5981,8 @@ def action_type_update(request, act_id):
 
 
 @login_required
+@hx_request_required
+@permission_required("employee.delete_actiontype")
 def action_type_delete(request, act_id):
     """
     This method is used to delete the action type.
@@ -5363,6 +6007,9 @@ def driver_viewed_status(request):
 
 @login_required
 def employee_charts(request):
+    """
+    This function is used to create personalized dashboard charts for employees
+    """
     employee_charts = DashboardEmployeeCharts.objects.get_or_create(
         employee=request.user.employee_get
     )[0]
@@ -5376,6 +6023,11 @@ def employee_charts(request):
 
 
 def check_permission(request, charts):
+    """
+    This function is used to check the permissions for the charts
+    Args:
+        charts: dashboard charts
+    """
     from recruitment.templatetags.recruitmentfilters import (
         is_recruitmentmangers,
         is_stagemanager,
@@ -5445,6 +6097,9 @@ def check_permission(request, charts):
 
 @login_required
 def employee_chart_show(request):
+    """
+    This function is used to choose which chart to show in the dashboard
+    """
     employee_charts = DashboardEmployeeCharts.objects.get_or_create(
         employee=request.user.employee_get
     )[0]
@@ -5474,6 +6129,8 @@ def employee_chart_show(request):
     ]
     charts = check_permission(request, charts)
     if request.method == "POST":
+        employee_charts.charts = []
+        employee_charts.save()
         data = request.POST
         for chart in charts:
             if chart[0] not in data.keys() and chart[0] not in employee_charts.charts:
@@ -5489,6 +6146,8 @@ def employee_chart_show(request):
     return render(request, "dashboard_chart_form.html", context)
 
 
+@login_required
+@permission_required("base.view_biometricattendance")
 def enable_biometric_attendance_view(request):
     biometric = BiometricAttendance.objects.first()
     return render(
@@ -5498,6 +6157,8 @@ def enable_biometric_attendance_view(request):
     )
 
 
+@login_required
+@permission_required("base.add_biometricattendance")
 def activate_biometric_attendance(request):
     if request.method == "GET":
         is_installed = request.GET.get("is_installed")
@@ -5520,3 +6181,154 @@ def activate_biometric_attendance(request):
             )
         instance.save()
     return JsonResponse({"message": "Success"})
+
+
+@login_required
+@permission_required("attendance.add_attendance")
+def allowed_ips(request):
+    """
+    This function is used to view the allowed ips
+    """
+    allowed_ips = AttendanceAllowedIP.objects.first()
+    return render(
+        request,
+        "attendance/ip_restriction/ip_restriction.html",
+        {"allowed_ips": allowed_ips},
+    )
+
+
+@login_required
+@permission_required("attendance.add_attendance")
+def enable_ip_restriction(request):
+    """
+    This function is used to enable the allowed ips
+    """
+    form = AttendanceAllowedIPForm()
+    if request.method == "POST":
+        ip_restiction = AttendanceAllowedIP.objects.first()
+
+        if not ip_restiction:
+            ip_restiction = AttendanceAllowedIP.objects.create(is_enabled=True)
+            return HttpResponse("<script>window.location.reload()</script>")
+
+        if not ip_restiction.is_enabled:
+            ip_restiction.is_enabled = True
+        elif ip_restiction.is_enabled:
+            ip_restiction.is_enabled = False
+
+        ip_restiction.save()
+        return HttpResponse("<script>window.location.reload()</script>")
+
+
+def validate_ip_address(self, value):
+    """
+    This function is used to check if the provided IP is in the ipv4 or ipv6 format.
+
+    Args:
+        value: The IP address to validate
+    """
+    try:
+        validate_ipv46_address(value)
+    except ValidationError:
+        raise ValidationError("Enter a valid IPv4 or IPv6 address.")
+    return value
+
+
+@login_required
+@permission_required("attendance.add_attendance")
+def create_allowed_ips(request):
+    """
+    This function is used to create the allowed ips
+    """
+    form = AttendanceAllowedIPForm()
+    if request.method == "POST":
+        form = AttendanceAllowedIPForm(request.POST)
+        if form.is_valid():
+            values = [request.POST[key] for key in request.POST.keys()]
+            allowed_ips = AttendanceAllowedIP.objects.first()
+            for value in values:
+                try:
+                    validate_ipv46_address(value)
+                    if value not in allowed_ips.additional_data["allowed_ips"]:
+                        allowed_ips.additional_data["allowed_ips"].append(value)
+                        messages.success(request, f"IP address saved successfully")
+                    else:
+                        messages.error(request, "IP address already exists")
+
+                except ValidationError:
+                    messages.error(
+                        request, f"Enter a valid IPv4 or IPv6 address: {value}"
+                    )
+
+            allowed_ips.save()
+
+            return HttpResponse("<script>window.location.reload()</script>")
+    return render(
+        request, "attendance/ip_restriction/restrict_form.html", {"form": form}
+    )
+
+
+@login_required
+@permission_required("attendance.delete_attendance")
+def delete_allowed_ips(request):
+    """
+    This function is used to delete the allowed ips
+    """
+    try:
+        ids = request.GET.getlist("id")
+        allowed_ips = AttendanceAllowedIP.objects.first()
+        ips = allowed_ips.additional_data["allowed_ips"]
+        for id in ids:
+            ips.pop(eval(id))
+
+        allowed_ips.additional_data["allowed_ips"] = ips
+        allowed_ips.save()
+
+        messages.success(request, "IP address removed successfully")
+    except:
+        messages.error(request, "Invalid id")
+    return redirect("allowed-ips")
+
+
+@login_required
+@permission_required("attendance.change_attendance")
+def edit_allowed_ips(request):
+    """
+    This function is used to edit the allowed ips
+    """
+    try:
+
+        allowed_ips = AttendanceAllowedIP.objects.first()
+        ips = allowed_ips.additional_data["allowed_ips"]
+        id = request.GET.get("id")
+
+        form = AttendanceAllowedIPUpdateForm(initial={"ip_address": ips[eval(id)]})
+        if request.method == "POST":
+            form = AttendanceAllowedIPUpdateForm(request.POST)
+            if form.is_valid():
+                new_ip = form.cleaned_data["ip_address"]
+                ips[eval(id)] = new_ip
+                if not new_ip in allowed_ips.additional_data["allowed_ips"]:
+                    allowed_ips.additional_data["allowed_ips"] = ips
+                    allowed_ips.save()
+                    messages.success(request, "IP address updated successfully")
+                else:
+                    messages.error(request, "IP address already exists")
+
+                return HttpResponse("<script>window.location.reload()</script>")
+    except:
+        messages.error(request, "Invalid id")
+    return render(
+        request,
+        "attendance/ip_restriction/restrict_update_form.html",
+        {"form": form, "id": id},
+    )
+
+
+@login_required
+def skills_view(request):
+    """
+    This function is used to view skills page in settings
+    """
+    skills = Skill.objects.all()
+    return render(request, "settings/skills/skills_view.html", {"skills": skills})

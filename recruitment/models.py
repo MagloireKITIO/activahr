@@ -22,9 +22,8 @@ from django.dispatch import receiver
 from django.utils.translation import gettext_lazy as _
 
 from base.horilla_company_manager import HorillaCompanyManager
-from base.models import Company, EmailLog, JobPosition
+from base.models import Company, JobPosition
 from employee.models import Employee
-from horilla.decorators import logger
 from horilla.models import HorillaModel
 from horilla_audit.methods import get_diff
 from horilla_audit.models import HorillaAuditInfo, HorillaAuditLog
@@ -79,6 +78,18 @@ class SurveyTemplate(HorillaModel):
 
     def __str__(self) -> str:
         return self.title
+
+
+class Skill(HorillaModel):
+    title = models.CharField(max_length=100)
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        title = self.title
+        self.title = title.capitalize()
+        super().save(*args, **kwargs)
 
 
 class Recruitment(HorillaModel):
@@ -137,6 +148,7 @@ class Recruitment(HorillaModel):
     )
     start_date = models.DateField(default=django.utils.timezone.now)
     end_date = models.DateField(blank=True, null=True)
+    skills = models.ManyToManyField(Skill, blank=True)
     objects = HorillaCompanyManager()
     default = models.manager.Manager()
 
@@ -176,14 +188,20 @@ class Recruitment(HorillaModel):
     def clean(self):
         if self.title is None:
             raise ValidationError({"title": _("This field is required")})
+        if self.is_published:
+            if self.vacancy <= 0:
+                raise ValidationError(
+                    _(
+                        "Vacancy must be greater than zero if the recruitment is publishing."
+                    )
+                )
+
         if self.end_date is not None and (
             self.start_date is not None and self.start_date > self.end_date
         ):
             raise ValidationError(
                 {"end_date": _("End date cannot be less than start date.")}
             )
-        # if not self.is_event_based and self.job_position_id is None:
-        #     raise ValidationError({"job_position_id": _("This field is required")})
         return super().clean()
 
     def save(self, *args, **kwargs):
@@ -196,6 +214,18 @@ class Recruitment(HorillaModel):
         This method will returns all the stage respectively to the ascending order of stages
         """
         return self.stage_set.order_by("sequence")
+
+    def is_vacancy_filled(self):
+        """
+        This method is used to check wether the vaccancy for the recruitment is completed or not
+        """
+        hired_stage = Stage.objects.filter(
+            recruitment_id=self, stage_type="hired"
+        ).first()
+        if hired_stage:
+            hired_candidate = hired_stage.candidate_set.all().exclude(canceled=True)
+            if len(hired_candidate) >= self.vacancy:
+                return True
 
 
 @receiver(post_save, sender=Recruitment)
@@ -301,6 +331,14 @@ class Candidate(HorillaModel):
         on_delete=models.PROTECT,
         null=True,
         verbose_name=_("Stage"),
+    )
+    converted_employee_id = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="candidate_get",
+        verbose_name=_("Employee"),
     )
     schedule_date = models.DateTimeField(
         blank=True, null=True, verbose_name=_("Schedule date")
@@ -437,6 +475,10 @@ class Candidate(HorillaModel):
         """
         return self.email
 
+    def get_mail(self):
+        """ """
+        return self.get_email()
+
     def tracking(self):
         """
         This method is used to return the tracked history of the instance
@@ -447,6 +489,8 @@ class Candidate(HorillaModel):
         """
         This method is used to get last send mail
         """
+        from base.models import EmailLog
+
         return (
             EmailLog.objects.filter(to__icontains=self.email)
             .order_by("-created_at")
@@ -505,6 +549,16 @@ class Candidate(HorillaModel):
                     sequence=50,
                 )
             self.stage_id = cancelled_stage
+        if (
+            self.converted_employee_id
+            and Candidate.objects.filter(
+                converted_employee_id=self.converted_employee_id
+            )
+            .exclude(id=self.id)
+            .exists()
+        ):
+            raise ValidationError(_("Employee is uniques for candidate"))
+
         super().save(*args, **kwargs)
 
     class Meta:
@@ -523,6 +577,9 @@ class Candidate(HorillaModel):
         ordering = ["sequence"]
 
 
+from horilla.signals import pre_bulk_update
+
+
 class RejectReason(HorillaModel):
     """
     RejectReason
@@ -533,7 +590,11 @@ class RejectReason(HorillaModel):
     )
     description = models.TextField(null=True, blank=True, max_length=255)
     company_id = models.ForeignKey(
-        Company, on_delete=models.CASCADE, null=True, blank=True
+        Company,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        verbose_name=_("Company"),
     )
     objects = HorillaCompanyManager()
 
@@ -616,11 +677,12 @@ class RecruitmentSurvey(HorillaModel):
     template_id = models.ManyToManyField(
         SurveyTemplate, verbose_name="Template", blank=True
     )
-    question = models.TextField(null=False)
+    is_mandatory = models.BooleanField(default=False)
     recruitment_ids = models.ManyToManyField(
         Recruitment,
         verbose_name=_("Recruitment"),
     )
+    question = models.TextField(null=False)
     job_position_ids = models.ManyToManyField(
         JobPosition, verbose_name=_("Job Positions"), editable=False
     )
@@ -632,7 +694,6 @@ class RecruitmentSurvey(HorillaModel):
     options = models.TextField(
         null=True, default="", help_text=_("Separate choices by ',  '"), max_length=255
     )
-    is_mandatory = models.BooleanField(default=False)
     objects = HorillaCompanyManager(related_company_field="recruitment_ids__company_id")
 
     def __str__(self) -> str:
@@ -720,6 +781,9 @@ class RecruitmentMailTemplate(HorillaModel):
         on_delete=models.CASCADE,
         verbose_name=_("Company"),
     )
+
+    def __str__(self) -> str:
+        return f"{self.title}"
 
 
 class SkillZone(HorillaModel):
@@ -834,9 +898,28 @@ class InterviewSchedule(HorillaModel):
     employee_id = models.ManyToManyField(Employee, verbose_name=_("interviewer"))
     interview_date = models.DateField(verbose_name=_("Interview Date"))
     interview_time = models.TimeField(verbose_name=_("Interview Time"))
+    description = models.TextField(
+        verbose_name=_("Description"), blank=True, max_length=255
+    )
     completed = models.BooleanField(
         default=False, verbose_name=_("Is Interview Completed")
     )
 
     def __str__(self) -> str:
         return f"{self.candidate_id} -Interview."
+
+
+class Resume(models.Model):
+    file = models.FileField(
+        upload_to="recruitment/resume",
+        validators=[
+            validate_pdf,
+        ],
+    )
+    recruitment_id = models.ForeignKey(
+        Recruitment, on_delete=models.CASCADE, related_name="resume"
+    )
+    is_candidate = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.recruitment_id} - Resume {self.pk}"

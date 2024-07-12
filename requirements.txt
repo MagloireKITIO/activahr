@@ -9,7 +9,8 @@ charset-normalizer
 click
 cryptography
 cssselect2
-Django>=4.2.11,<5.0
+Django==4.2.11
+django-auditlog
 django-apscheduler
 django-cors-headers
 django-environ
@@ -22,8 +23,8 @@ django-simple-history
 django-widget-tweaks
 et-xmlfile
 html5lib
+Jinja2
 idna
-jinja2>=3.1.2
 lxml
 numpy
 openpyxl
@@ -33,14 +34,16 @@ pillow
 pycparser
 pyHanko
 pyhanko-certvalidator
+PyMuPDF== 1.24.5
 pypdf
 pypng
 python-bidi
 python-dateutil
 pytz
 PyYAML
+pyzk==0.9
 qrcode
-reportlab
+reportlab==4.0.9
 requests
 setuptools
 six

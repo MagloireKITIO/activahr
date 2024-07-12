@@ -11,7 +11,7 @@
       {% for field in form.visible_fields %}
       {% if field.field.widget|is_select_multiple or field.field.widget|is_text_area %}
       <label
-      class="oh-label"
+      class="oh-label {% if field.field.required %} required-star{% endif %}"
       for="id_{{ field.name }}"
       title="{{ field.help_text|safe }}"
       >{% trans field.label %}</label
@@ -20,11 +20,11 @@
 
         {{ field|add_class:"form-control" }}
       </div>
-
+      {{field.errors}}
       {% else %}
       <div class="col-12 col-md-6" id="id_{{ field.name }}_parent_div">
         <label
-          class="oh-label"
+          class="oh-label {% if field.field.required %} required-star{% endif %}"
           for="id_{{ field.name }}"
           title="{{ field.help_text|safe }}"
           >{% trans field.label %}</label
@@ -44,10 +44,10 @@
 
     </div>
 
-    <div class="d-flex flex-row-reverse">
+    <div class="oh-modal__dialog-footer p-0 mt-3">
       <button
         type="submit"
-        class="oh-btn oh-btn--secondary mt-2 mr-0 pl-4 pr-5 oh-btn--w-100-resp"
+        class="oh-btn oh-btn--secondary oh-btn--shadow"
       >
         {% trans "Save" %}
       </button>
