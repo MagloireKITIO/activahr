@@ -639,6 +639,7 @@ IF_CONDITION_CHOICE = [
     ("gt", _("Greater Than (>)")),
     ("le", _("Less Than or Equal To (<=)")),
     ("ge", _("Greater Than or Equal To (>=)")),
+    ("range", _("Range")),
 ]
 FIELD_CHOICE = [
     ("children", _("Children")),
@@ -881,6 +882,12 @@ class Allowance(HorillaModel):
     )
     if_amount = models.FloatField(
         default=0.00, help_text=_("The amount of the pay-head")
+    )
+    start_range = models.FloatField(
+        blank=True, null=True, help_text=_("The start amount of the pay-head range")
+    )
+    end_range = models.FloatField(
+        blank=True, null=True, help_text=_("The end amount of the pay-head range")
     )
     company_id = models.ForeignKey(
         Company, null=True, editable=False, on_delete=models.PROTECT
@@ -1190,6 +1197,12 @@ class Deduction(HorillaModel):
     )
     if_amount = models.FloatField(
         default=0.00, help_text=_("The amount of the pay-head")
+    )
+    start_range = models.FloatField(
+        blank=True, null=True, help_text=_("The start amount of the pay-head range")
+    )
+    end_range = models.FloatField(
+        blank=True, null=True, help_text=_("The end amount of the pay-head range")
     )
     company_id = models.ForeignKey(
         Company, null=True, editable=False, on_delete=models.PROTECT
@@ -1894,6 +1907,12 @@ class PayslipAutoGenerate(models.Model):
                         "company_id": "Auto payslip generation for all company is already exists"
                     }
                 )
+
+    def save(self):
+        from payroll.scheduler import auto_payslip_generate
+
+        if self.auto_generate:
+            auto_payslip_generate()
 
     def __str__(self) -> str:
         return f"{self.generate_day} | {self.company_id} "
