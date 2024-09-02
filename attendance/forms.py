@@ -30,7 +30,9 @@ from collections import OrderedDict
 from typing import Any, Dict
 
 from django import forms
+from django.apps import apps
 from django.core.exceptions import ValidationError
+from django.db.models.query import QuerySet
 from django.forms import DateTimeInput
 from django.template.loader import render_to_string
 from django.utils.html import format_html
@@ -46,22 +48,19 @@ from attendance.models import (
     AttendanceRequestFile,
     AttendanceValidationCondition,
     GraceTime,
-    PenaltyAccount,
+    WorkRecords,
     attendance_date_validate,
     strtime_seconds,
     validate_time_format,
 )
 from base.forms import MultipleFileField
-from base.methods import reload_queryset
+from base.methods import get_working_days, reload_queryset
 from base.models import Company, EmployeeShift
 from employee.filters import EmployeeFilter
 from employee.models import Employee
 from horilla import horilla_middlewares
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
-from leave.filters import LeaveRequestFilter
-from leave.models import LeaveType
-from payroll.methods.methods import get_working_days
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +204,9 @@ class AttendanceUpdateForm(ModelForm):
         self.fields["shift_id"].widget.attrs.update(
             {
                 "id": str(uuid.uuid4()),
-                "onchange": "shiftChange($(this))",
+                "hx-include": "#attendanceUpdateForm",
+                "hx-target": "#attendanceUpdateForm",
+                "hx-get": "/attendance/update-fields-based-shift",
             }
         )
         self.fields["attendance_date"].widget.attrs.update(
@@ -279,22 +280,30 @@ class AttendanceForm(ModelForm):
         }
 
     def __init__(self, *args, **kwargs):
+        # Get the initial data passed from the view
+        view_initial = kwargs.pop("initial", {})
+
+        # Default initial values
         initial = {
             "attendance_clock_out_date": datetime.datetime.today()
             .date()
             .strftime("%Y-%m-%d"),
             "attendance_clock_out": datetime.datetime.today().time().strftime("%H:%M"),
         }
+
+        # If an instance is provided, override the default initial values
         if instance := kwargs.get("instance"):
-            # django forms not showing value inside the date, time html element.
-            # so here overriding default forms instance method to set initial value
-            initial = {
-                "attendance_date": instance.attendance_date.strftime("%Y-%m-%d"),
-                "attendance_clock_in": instance.attendance_clock_in.strftime("%H:%M"),
-                "attendance_clock_in_date": instance.attendance_clock_in_date.strftime(
-                    "%Y-%m-%d"
-                ),
-            }
+            initial.update(
+                {
+                    "attendance_date": instance.attendance_date.strftime("%Y-%m-%d"),
+                    "attendance_clock_in": instance.attendance_clock_in.strftime(
+                        "%H:%M"
+                    ),
+                    "attendance_clock_in_date": instance.attendance_clock_in_date.strftime(
+                        "%Y-%m-%d"
+                    ),
+                }
+            )
             if instance.attendance_clock_out_date is not None:
                 initial["attendance_clock_out"] = (
                     instance.attendance_clock_out.strftime("%H:%M")
@@ -302,14 +311,20 @@ class AttendanceForm(ModelForm):
                 initial["attendance_clock_out_date"] = (
                     instance.attendance_clock_out_date.strftime("%Y-%m-%d")
                 )
+
+        # Merge with initial values passed from the view
+        initial.update(view_initial)
         kwargs["initial"] = initial
+
         super().__init__(*args, **kwargs)
         reload_queryset(self.fields)
         self.fields["employee_id"].widget.attrs.update({"id": str(uuid.uuid4())})
         self.fields["shift_id"].widget.attrs.update(
             {
                 "id": str(uuid.uuid4()),
-                "onchange": "shiftChange($(this))",
+                "hx-include": "#attendanceCreateForm",
+                "hx-target": "#attendanceCreateForm",
+                "hx-get": "/attendance/update-fields-based-shift",
             }
         )
         self.fields["attendance_date"].widget.attrs.update(
@@ -561,7 +576,10 @@ class AttendanceRequestForm(ModelForm):
         self.fields["shift_id"].widget.attrs.update(
             {
                 "id": str(uuid.uuid4()),
-                "onchange": "shiftChange($(this))",
+                "hx-include": "#attendanceRequestForm",
+                "hx-target": "#attendanceRequestDiv",
+                "hx-swap": "outerHTML",
+                "hx-get": "/attendance/update-fields-based-shift",
             }
         )
         self.fields["attendance_date"].widget.attrs.update(
@@ -610,7 +628,8 @@ class NewRequestForm(AttendanceRequestForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
+        # Get the initial data passes from views.py file
+        view_initial = kwargs.pop("initial", {})
         # Add the new model choice field to the form at the beginning
         old_dict = self.fields
         new_dict = {
@@ -622,9 +641,9 @@ class NewRequestForm(AttendanceRequestForm):
                         "class": "oh-select oh-select-2 w-100",
                         "hx-target": "#id_shift_id_div",
                         "hx-get": "/attendance/get-employee-shift?bulk=False",
-                        "hx-trigger": "change",
                     }
                 ),
+                initial=view_initial.get("employee_id"),
             ),
             "create_bulk": forms.BooleanField(
                 required=False,
@@ -634,7 +653,6 @@ class NewRequestForm(AttendanceRequestForm):
                         "class": "oh-checkbox",
                         "hx-target": "#objectCreateModalTarget",
                         "hx-get": "/attendance/request-new-attendance?bulk=True",
-                        "hx-trigger": "change",
                     }
                 ),
             ),
@@ -642,6 +660,8 @@ class NewRequestForm(AttendanceRequestForm):
         self.fields["request_description"].label = _("Request description")
         new_dict.update(old_dict)
         self.fields = new_dict
+
+        kwargs["initial"] = view_initial
 
     def as_p(self, *args, **kwargs):
         """
@@ -727,6 +747,7 @@ excluded_fields = [
     "request_type",
     "month_sequence",
     "objects",
+    "horilla_history",
 ]
 
 
@@ -754,27 +775,6 @@ class AttendanceExportForm(forms.Form):
             "attendance_validated",
         ],
     )
-
-
-class PenaltyAccountForm(ModelForm):
-    """
-    PenaltyAccountForm
-    """
-
-    class Meta:
-        model = PenaltyAccount
-        fields = "__all__"
-        exclude = ["is_active"]
-
-    def __init__(self, *args, **kwargs):
-        employee = kwargs.pop("employee", None)
-        super().__init__(*args, **kwargs)
-        if employee:
-            available_leaves = employee.available_leave.all()
-            assigned_leave_types = LeaveType.objects.filter(
-                id__in=available_leaves.values_list("leave_type_id", flat=True)
-            )
-            self.fields["leave_type_id"].queryset = assigned_leave_types
 
 
 class LateComeEarlyOutExportForm(forms.Form):
@@ -864,14 +864,6 @@ class GraceTimeForm(ModelForm):
 
         exclude = ["objects", "allowed_time_in_secs", "is_active"]
 
-    def as_p(self, *args, **kwargs):
-        """
-        Render the form fields as HTML table rows with Bootstrap styling.
-        """
-        context = {"form": self}
-        table_html = render_to_string("attendance_form.html", context)
-        return table_html
-
 
 class AttendanceRequestCommentForm(ModelForm):
     """
@@ -897,15 +889,21 @@ def get_date_list(employee_id, from_date, to_date):
     attendance_dates = []
     if len(working_date_list) > 0:
         # filter through approved leave of employee
-        approved_leave_dates_filtered = LeaveRequestFilter(
-            data={
-                "from_date": working_date_list[0],
-                "to_date": working_date_list[-1],
-                "employee_id": employee_id,
-                "status": "approved",
-            }
-        )
-        approved_leave_dates_filtered = approved_leave_dates_filtered.qs
+        if apps.is_installed("leave"):
+            from leave.filters import LeaveRequestFilter
+
+            approved_leave_dates_filtered = LeaveRequestFilter(
+                data={
+                    "from_date": working_date_list[0],
+                    "to_date": working_date_list[-1],
+                    "status": "approved",
+                }
+            )
+            approved_leave_dates_filtered = approved_leave_dates_filtered.qs.filter(
+                employee_id=employee_id
+            )
+        else:
+            approved_leave_dates_filtered = QuerySet().none()
         approved_leave_dates = []
         # Extract the list of approved leave dates
         if len(approved_leave_dates_filtered) > 0:
@@ -915,10 +913,9 @@ def get_date_list(employee_id, from_date, to_date):
             data={
                 "attendance_date__gte": working_date_list[0],
                 "attendance_date__lte": working_date_list[-1],
-                "employee_id": employee_id,
             }
         )
-        existing_attendance = attendance_filters.qs
+        existing_attendance = attendance_filters.qs.filter(employee_id=employee_id)
         # Extract the list of attendance dates
         attendance_dates = list(
             existing_attendance.values_list("attendance_date", flat=True)
@@ -943,7 +940,6 @@ class BulkAttendanceRequestForm(ModelForm):
             attrs={
                 "hx-target": "#id_shift_id_div",
                 "hx-get": "/attendance/get-employee-shift?bulk=True",
-                "hx-trigger": "change",
             }
         ),
         label=_("Employee"),
@@ -957,7 +953,6 @@ class BulkAttendanceRequestForm(ModelForm):
                 "class": "oh-checkbox",
                 "hx-target": "#objectCreateModalTarget",
                 "hx-get": "/attendance/request-new-attendance?bulk=False",
-                "hx-trigger": "change",
             }
         ),
     )
@@ -1077,6 +1072,7 @@ class BulkAttendanceRequestForm(ModelForm):
                 instance.is_validate_request = True
                 instance.employee_id = employee_id
                 instance.request_type = "create_request"
+                instance.is_bulk_request = True
                 instance.save()
             else:
                 logger(form.errors)
@@ -1085,3 +1081,17 @@ class BulkAttendanceRequestForm(ModelForm):
             instance.save()
 
         return instance
+
+
+class WorkRecordsForm(ModelForm):
+    """
+    WorkRecordForm
+    """
+
+    class Meta:
+        """
+        Meta class for additional options
+        """
+
+        fields = "__all__"
+        model = WorkRecords

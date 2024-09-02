@@ -28,6 +28,7 @@ from datetime import date, datetime
 from typing import Any
 
 from django import forms
+from django.apps import apps
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.template.loader import render_to_string
 from django.utils.translation import gettext_lazy as _
@@ -37,16 +38,15 @@ from base.methods import reload_queryset
 from employee.filters import EmployeeFilter
 from employee.models import Employee
 from horilla import horilla_middlewares
+from horilla.horilla_middlewares import _thread_locals
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
-from leave.models import LeaveRequest
 from recruitment import widgets
 from recruitment.models import (
     Candidate,
     InterviewSchedule,
     JobPosition,
     Recruitment,
-    RecruitmentMailTemplate,
     RecruitmentSurvey,
     RejectedCandidate,
     RejectReason,
@@ -352,11 +352,15 @@ class CandidateCreationForm(ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["profile"].widget.attrs["accept"] = ".jpg, .jpeg, .png"
+        self.fields["profile"].required = False
+        self.fields["resume"].widget.attrs["accept"] = ".pdf"
+        self.fields["resume"].required = False
         if self.instance.recruitment_id is not None:
             if self.instance is not None:
                 self.fields["job_position_id"] = forms.ModelChoiceField(
                     queryset=self.instance.recruitment_id.open_positions.all(),
-                    # additional field options
+                    label="Job Position",
                 )
         self.fields["recruitment_id"].widget.attrs = {"data-widget": "ajax-widget"}
         self.fields["job_position_id"].widget.attrs = {"data-widget": "ajax-widget"}
@@ -429,24 +433,29 @@ class CandidateCreationForm(ModelForm):
         return table_html
 
     def clean(self):
+        errors = {}
+        profile = self.cleaned_data["profile"]
+        resume = self.cleaned_data["resume"]
+        recruitment: Recruitment = self.cleaned_data["recruitment_id"]
+        if not resume and not recruitment.optional_resume:
+            errors["resume"] = _("This field is required")
+        if not profile and not recruitment.optional_profile_image:
+            errors["profile"] = _("This field is required")
         if self.instance.name is not None:
             self.errors.pop("job_position_id", None)
             if (
                 self.instance.job_position_id is None
                 or self.data.get("job_position_id") == ""
             ):
-                raise forms.ValidationError(
-                    {"job_position_id": "This field is required"}
-                )
+                errors["job_position_id"] = _("This field is required")
             if (
                 self.instance.job_position_id
                 not in self.instance.recruitment_id.open_positions.all()
             ):
-                raise forms.ValidationError({"job_position_id": "Choose valid choice"})
+                errors["job_position_id"] = _("Choose valid choice")
+        if errors:
+            raise ValidationError(errors)
         return super().clean()
-
-
-from horilla.horilla_middlewares import _thread_locals
 
 
 class ApplicationForm(RegistrationForm):
@@ -495,6 +504,10 @@ class ApplicationForm(RegistrationForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         request = getattr(_thread_locals, "request", None)
+        self.fields["profile"].widget.attrs["accept"] = ".jpg, .jpeg, .png"
+        self.fields["profile"].required = False
+        self.fields["resume"].widget.attrs["accept"] = ".pdf"
+        self.fields["resume"].required = False
 
         self.fields["recruitment_id"].widget.attrs = {"data-widget": "ajax-widget"}
         self.fields["job_position_id"].widget.attrs = {"data-widget": "ajax-widget"}
@@ -505,10 +518,23 @@ class ApplicationForm(RegistrationForm):
         name = self.cleaned_data["name"]
         request = getattr(_thread_locals, "request", None)
 
-        if request and request.user.has_perm("recruitment.add_candidate"):
+        errors = {}
+        profile = self.cleaned_data["profile"]
+        resume = self.cleaned_data["resume"]
+        recruitment: Recruitment = self.cleaned_data["recruitment_id"]
+        if not resume and not recruitment.optional_resume:
+            errors["resume"] = _("This field is required")
+        if not profile and not recruitment.optional_profile_image:
+            errors["profile"] = _("This field is required")
+        if errors:
+            raise ValidationError(errors)
+        if (
+            not profile
+            and request
+            and request.user.has_perm("recruitment.add_candidate")
+        ):
             profile_pic_url = f"https://ui-avatars.com/api/?name={name}"
             self.cleaned_data["profile"] = profile_pic_url
-
         super().clean()
         return self.cleaned_data
 
@@ -574,6 +600,12 @@ class AddCandidateForm(ModelForm):
                 recruitment_id=recruitment
             )
             self.fields["job_position_id"].queryset = recruitment.open_positions
+        self.fields["profile"].widget.attrs["accept"] = ".jpg, .jpeg, .png"
+        self.fields["resume"].widget.attrs["accept"] = ".pdf"
+        if recruitment.optional_profile_image:
+            self.fields["profile"].required = False
+        if recruitment.optional_resume:
+            self.fields["resume"].required = False
         self.fields["gender"].empty_label = None
         self.fields["job_position_id"].empty_label = None
         self.fields["stage_id"].empty_label = None
@@ -760,7 +792,7 @@ class QuestionForm(ModelForm):
                 if key.startswith("options") and value:
                     additional_options.append(value)
 
-            instance.options = ",".join(additional_options)
+            instance.options = ", ".join(additional_options)
             if commit:
                 instance.save()
                 self.save_m2m()
@@ -917,47 +949,6 @@ class CandidateExportForm(forms.Form):
             "joining_date",
         ],
     )
-
-
-class OfferLetterForm(ModelForm):
-    """
-    OfferLetterForm
-    """
-
-    class Meta:
-        model = RecruitmentMailTemplate
-        fields = "__all__"
-        # exclude = ["is_active"]
-        widgets = {
-            "body": forms.Textarea(
-                attrs={"data-summernote": "", "style": "display:none;"}
-            ),
-        }
-
-    def get_template_language(self):
-        mail_data = {
-            "Receiver|Full name": "instance.get_full_name",
-            "Sender|Full name": "self.get_full_name",
-            "Receiver|Recruitment": "instance.recruitment_id",
-            "Sender|Recruitment": "self.recruitment_id",
-            "Receiver|Company": "instance.get_company",
-            "Sender|Company": "self.get_company",
-            "Receiver|Job position": "instance.get_job_position",
-            "Sender|Job position": "self.get_job_position",
-            "Receiver|Email": "instance.get_mail",
-            "Sender|Email": "self.get_mail",
-            "Receiver|Employee Type": "instance.get_employee_type",
-            "Sender|Employee Type": "self.get_employee_type",
-            "Receiver|Work Type": "instance.get_work_type",
-            "Sender|Work Type": "self.get_work_type",
-            "Candidate|Full name": "instance.get_full_name",
-            "Candidate|Recruitment": "instance.recruitment_id",
-            "Candidate|Company": "instance.get_company",
-            "Candidate|Job position": "instance.get_job_position",
-            "Candidate|Email": "instance.get_email",
-            "Candidate|Interview Table": "instance.get_interview|safe",
-        }
-        return mail_data
 
 
 class SkillZoneCreateForm(ModelForm):
@@ -1174,6 +1165,7 @@ class ScheduleInterviewForm(ModelForm):
         )
 
     def clean(self):
+
         instance = self.instance
         cleaned_data = super().clean()
         interview_date = cleaned_data.get("interview_date")
@@ -1193,9 +1185,15 @@ class ScheduleInterviewForm(ModelForm):
                     "interview_time", _("Interview time cannot be in the past.")
                 )
 
-        leave_employees = LeaveRequest.objects.filter(
-            employee_id__in=managers, status="approved"
-        )
+        if apps.is_installed("leave"):
+            from leave.models import LeaveRequest
+
+            leave_employees = LeaveRequest.objects.filter(
+                employee_id__in=managers, status="approved"
+            )
+        else:
+            leave_employees = []
+
         employees = [
             leave.employee_id.get_full_name()
             for leave in leave_employees

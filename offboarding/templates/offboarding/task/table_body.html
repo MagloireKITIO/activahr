@@ -36,7 +36,7 @@
                 {% elif employee.notice_period_ends < today %}
                     {% trans "Notice period ended" %}
                 {% else %}
-                    {% if employee.notice_period_ends|sub:today %}
+                    {% if employee.notice_period_ends %}
                         {% trans 'In' %} {{employee.notice_period_ends|timeuntil}}
                     {% endif %}
                 {% endif %}
@@ -116,7 +116,7 @@
                         <a
                             type="button"
                             title="{% trans 'Show managing records' %}"
-                            hx-get="{% url 'get-manager-in' %}?employee_id={{employee.employee_id.id}}"
+                            hx-get="{% url 'get-manager-in' %}?employee_id={{employee.employee_id.id}}&offboarding=True"
                             hx-target="#objectDetailsModalTarget"
                             data-toggle="oh-modal-toggle"
                             data-target="#objectDetailsModal"

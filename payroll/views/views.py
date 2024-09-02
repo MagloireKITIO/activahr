@@ -36,6 +36,7 @@ from horilla.decorators import (
     permission_required,
 )
 from horilla.group_by import group_by_queryset
+from horilla.horilla_settings import HORILLA_DATE_FORMATS
 from notifications.signals import notify
 from payroll.context_processors import get_active_employees
 from payroll.filters import ContractFilter, ContractReGroup, PayslipFilter
@@ -54,7 +55,6 @@ from payroll.models.models import (
     Reimbursement,
     ReimbursementFile,
     ReimbursementrequestComment,
-    WorkRecord,
 )
 from payroll.models.tax_models import PayrollSettings
 
@@ -286,17 +286,12 @@ def contract_view(request):
     else:
         template = "payroll/contract/contract_empty.html"
 
-    field = request.GET.get("field")
     contracts = paginator_qry(contracts, request.GET.get("page"))
     contract_ids_json = json.dumps([instance.id for instance in contracts.object_list])
     filter_form = ContractFilter(request.GET)
-    export_filter = ContractFilter(request.GET)
-    export_column = ContractExportFieldForm()
     context = {
         "contracts": contracts,
         "f": filter_form,
-        "export_filter": export_filter,
-        "export_column": export_column,
         "contract_ids": contract_ids_json,
         "gp_fields": ContractReGroup.fields,
     }
@@ -405,73 +400,6 @@ def contract_filter(request):
             "contract_ids": contract_ids_json,
             "field": field,
         },
-    )
-
-
-@login_required
-@permission_required("payroll.view_workrecord")
-def work_record_create(request):
-    """
-    Work record create view
-    """
-    from payroll.forms.forms import WorkRecordForm
-
-    form = WorkRecordForm()
-
-    context = {"form": form}
-    if request.POST:
-        form = WorkRecordForm(request.POST)
-        if form.is_valid():
-            form.save()
-        else:
-            context["form"] = form
-    return render(request, "payroll/work_record/work_record_create.html", context)
-
-
-@login_required
-@permission_required("payroll.view_workrecord")
-def work_record_view(request):
-    """
-    Work record view method
-    """
-    contracts = WorkRecord.objects.all()
-    context = {"contracts": contracts}
-    return render(request, "payroll/work_record/work_record_view.html", context)
-
-
-@login_required
-@permission_required("payroll.workrecord")
-def work_record_employee_view(request):
-    """
-    Work record by employee view method
-    """
-    current_month_start_date = datetime.now().replace(day=1)
-    next_month_start_date = current_month_start_date + timedelta(days=31)
-    current_month_records = WorkRecord.objects.filter(
-        start_datetime__gte=current_month_start_date,
-        start_datetime__lt=next_month_start_date,
-    ).order_by("start_datetime")
-    current_date = timezone.now().date()
-    current_month = current_date.strftime("%B")
-    start_of_month = current_date.replace(day=1)
-    employees = Employee.objects.all()
-
-    current_month_dates_list = [
-        datetime.now().replace(day=day).date() for day in range(1, 32)
-    ]
-
-    context = {
-        "days": range(1, 32),
-        "employees": employees,
-        "current_date": current_date,
-        "current_month": current_month,
-        "start_of_month": start_of_month,
-        "current_month_dates_list": current_month_dates_list,
-        "work_records": current_month_records,
-    }
-
-    return render(
-        request, "payroll/work_record/work_record_employees_view.html", context
     )
 
 
@@ -973,9 +901,12 @@ def payslip_export(request):
         for deduction_id, group in grouped_deductions.items():
             title = group[0]["title"]
             employee_contribution = sum(item["amount"] for item in group)
-            employer_contribution = sum(
-                item["employer_contribution_amount"] for item in group
-            )
+            try:
+                employer_contribution = sum(
+                    item["employer_contribution_amount"] for item in group
+                )
+            except:
+                employer_contribution = 0
             total_contribution = employee_contribution + employer_contribution
             if employer_contribution > 0:
                 contribution_deductions.append(
@@ -989,7 +920,7 @@ def payslip_export(request):
                 )
                 table5_data.append(
                     {
-                        "Employee": Employee.objects.get(id=emp),
+                        "Employee": Employee.objects.get(id=emp.id),
                         "Employer Contribution": employer_contribution,
                         "Employee Contribution": employee_contribution,
                     }
@@ -1011,20 +942,6 @@ def payslip_export(request):
             else:
                 date_format = "MMM. D, YYYY"
 
-            # Define date formats
-            date_formats = {
-                "DD-MM-YYYY": "%d-%m-%Y",
-                "DD.MM.YYYY": "%d.%m.%Y",
-                "DD/MM/YYYY": "%d/%m/%Y",
-                "MM/DD/YYYY": "%m/%d/%Y",
-                "YYYY-MM-DD": "%Y-%m-%d",
-                "YYYY/MM/DD": "%Y/%m/%d",
-                "MMMM D, YYYY": "%B %d, %Y",
-                "DD MMMM, YYYY": "%d %B, %Y",
-                "MMM. D, YYYY": "%b. %d, %Y",
-                "D MMM. YYYY": "%d %b. %Y",
-                "dddd, MMMM D, YYYY": "%A, %B %d, %Y",
-            }
             start_date_str = str(payslip.start_date)
             end_date_str = str(payslip.end_date)
 
@@ -1032,11 +949,11 @@ def payslip_export(request):
             start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
 
-            for format_name, format_string in date_formats.items():
+            for format_name, format_string in HORILLA_DATE_FORMATS.items():
                 if format_name == date_format:
                     formatted_start_date = start_date.strftime(format_string)
 
-            for format_name, format_string in date_formats.items():
+            for format_name, format_string in HORILLA_DATE_FORMATS.items():
                 if format_name == date_format:
                     formatted_end_date = end_date.strftime(format_string)
 
@@ -1345,6 +1262,19 @@ def slip_group_name_update(request):
 @login_required
 @permission_required("payroll.add_contract")
 def contract_export(request):
+    hx_request = request.META.get("HTTP_HX_REQUEST")
+    if hx_request:
+        export_filter = ContractFilter()
+        export_column = ContractExportFieldForm()
+        content = {
+            "export_filter": export_filter,
+            "export_column": export_column,
+        }
+        return render(
+            request,
+            "payroll/contract/contract_export_filter.html",
+            context=content,
+        )
     return export_data(
         request=request,
         model=Contract,
@@ -1436,31 +1366,16 @@ def payslip_pdf(request, id):
         start_date_str = data["start_date"]
         end_date_str = data["end_date"]
 
-        # Define date formats
-        date_formats = {
-            "DD-MM-YYYY": "%d-%m-%Y",
-            "DD.MM.YYYY": "%d.%m.%Y",
-            "DD/MM/YYYY": "%d/%m/%Y",
-            "MM/DD/YYYY": "%m/%d/%Y",
-            "YYYY-MM-DD": "%Y-%m-%d",
-            "YYYY/MM/DD": "%Y/%m/%d",
-            "MMMM D, YYYY": "%B %d, %Y",
-            "DD MMMM, YYYY": "%d %B, %Y",
-            "MMM. D, YYYY": "%b. %d, %Y",
-            "D MMM. YYYY": "%d %b. %Y",
-            "dddd, MMMM D, YYYY": "%A, %B %d, %Y",
-        }
-
         # Convert the string to a datetime.date object
         start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
 
         # Print the formatted date for each format
-        for format_name, format_string in date_formats.items():
+        for format_name, format_string in HORILLA_DATE_FORMATS.items():
             if format_name == date_format:
                 formatted_start_date = start_date.strftime(format_string)
 
-        for format_name, format_string in date_formats.items():
+        for format_name, format_string in HORILLA_DATE_FORMATS.items():
             if format_name == date_format:
                 formatted_end_date = end_date.strftime(format_string)
 

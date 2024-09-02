@@ -16,6 +16,7 @@ import contextlib
 import io
 import json
 import os
+import random
 import re
 from datetime import datetime
 from itertools import chain
@@ -41,8 +42,9 @@ from django.views.decorators.http import require_http_methods
 from base.backends import ConfiguredEmailBackend
 from base.context_processors import check_candidate_self_tracking
 from base.countries import country_arr, s_a, states
+from base.forms import MailTemplateForm
 from base.methods import export_data, generate_pdf, get_key_instances
-from base.models import EmailLog, JobPosition
+from base.models import EmailLog, HorillaMailTemplate, JobPosition
 from employee.models import Employee, EmployeeWorkInformation
 from horilla import settings
 from horilla.decorators import (
@@ -67,7 +69,6 @@ from recruitment.forms import (
     AddCandidateForm,
     CandidateCreationForm,
     CandidateExportForm,
-    OfferLetterForm,
     RecruitmentCreationForm,
     RejectReasonForm,
     ResumeForm,
@@ -87,7 +88,6 @@ from recruitment.models import (
     InterviewSchedule,
     Recruitment,
     RecruitmentGeneralSetting,
-    RecruitmentMailTemplate,
     RecruitmentSurvey,
     RejectReason,
     Resume,
@@ -214,7 +214,7 @@ def recruitment(request):
     """
     form = RecruitmentCreationForm()
     if request.GET:
-        form = RecruitmentCreationForm(request.GET)
+        form = RecruitmentCreationForm(initial=request.GET.dict())
     dynamic = (
         request.GET.get("dynamic") if request.GET.get("dynamic") != "None" else None
     )
@@ -251,6 +251,7 @@ def recruitment(request):
                     redirect=reverse("pipeline"),
                 )
             return HttpResponse("<script>location.reload();</script>")
+    print(dynamic)
     return render(
         request, "recruitment/recruitment_form.html", {"form": form, "dynamic": dynamic}
     )
@@ -264,7 +265,6 @@ def recruitment_view(request):
     """
     if not request.GET:
         request.GET.copy().update({"is_active": "on"})
-    form = RecruitmentCreationForm()
     queryset = Recruitment.objects.filter(is_active=True)
     if Recruitment.objects.all():
         template = "recruitment/recruitment_view.html"
@@ -289,7 +289,6 @@ def recruitment_view(request):
         {
             "data": paginator_qry(filter_obj.qs, request.GET.get("page")),
             "f": filter_obj,
-            "form": form,
             "filter_dict": filter_dict,
             "pd": request.GET.urlencode() + "&closed=false",
         },
@@ -1722,7 +1721,7 @@ def form_send_mail(request, cand_id=None):
     else:
         stage_id = None
 
-    templates = RecruitmentMailTemplate.objects.all()
+    templates = HorillaMailTemplate.objects.all()
     return render(
         request,
         "pipeline/pipeline_components/send_mail.html",
@@ -1731,7 +1730,7 @@ def form_send_mail(request, cand_id=None):
             "templates": templates,
             "candidates": candidates,
             "stage_id": stage_id,
-            "searchWords": OfferLetterForm().get_template_language(),
+            "searchWords": MailTemplateForm().get_template_language(),
         },
     )
 
@@ -1935,7 +1934,7 @@ def send_acknowledgement(request):
     template_attachment_ids = request.POST.getlist("template_attachments")
     for candidate in candidates:
         bodys = list(
-            RecruitmentMailTemplate.objects.filter(
+            HorillaMailTemplate.objects.filter(
                 id__in=template_attachment_ids
             ).values_list("body", flat=True)
         )
@@ -2533,7 +2532,9 @@ def open_recruitments(request):
     This method is used to render the open recruitment page
     """
     recruitments = Recruitment.default.filter(closed=False, is_published=True)
-    context = {"recruitments": recruitments, "now": datetime.now()}
+    context = {
+        "recruitments": recruitments,
+    }
     response = render(request, "recruitment/open_recruitments.html", context)
     response["X-Frame-Options"] = "ALLOW-FROM *"
 
@@ -2635,6 +2636,15 @@ def create_reject_reason(request):
             messages.success(request, "Reject reason saved")
             return HttpResponse("<script>window.location.reload()</script>")
     return render(request, "settings/reject_reason_form.html", {"form": form})
+
+
+@login_required
+@permission_required("recruitment.view_recruitment")
+def self_tracking_feature(request):
+    """
+    Recruitment optional feature for candidate self tracking
+    """
+    return render(request, "recruitment/settings/settings.html")
 
 
 @login_required
@@ -2827,6 +2837,15 @@ def check_vaccancy(request):
     if stage and stage.recruitment_id.is_vacancy_filled():
         message = _("Vaccancy is filled")
     return JsonResponse({"message": message})
+
+
+@login_required
+def skills_view(request):
+    """
+    This function is used to view skills page in settings
+    """
+    skills = Skill.objects.all()
+    return render(request, "settings/skills/skills_view.html", {"skills": skills})
 
 
 @login_required
@@ -3036,3 +3055,51 @@ def matching_resume_completion(request):
     contact_info = extract_info(resume_file)
 
     return JsonResponse(contact_info)
+
+
+@login_required
+@permission_required("recruitment.view_rejectreason")
+def candidate_reject_reasons(request):
+    """
+    This method is used to view all the reject reasons
+    """
+    reject_reasons = RejectReason.objects.all()
+    return render(
+        request, "settings/reject_reasons.html", {"reject_reasons": reject_reasons}
+    )
+
+
+@login_required
+def hired_candidate_chart(request):
+    """
+    function used to show hired candidates in all recruitments.
+
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+
+    Returns:
+    GET : return Json response labels, data, background_color, border_color.
+    """
+    labels = []
+    data = []
+    background_color = []
+    border_color = []
+    recruitments = Recruitment.objects.filter(closed=False, is_active=True)
+    for recruitment in recruitments:
+        red = random.randint(0, 255)
+        green = random.randint(0, 255)
+        blue = random.randint(0, 255)
+        background_color.append(f"rgba({red}, {green}, {blue}, 0.2")
+        border_color.append(f"rgb({red}, {green}, {blue})")
+        labels.append(f"{recruitment}")
+        data.append(recruitment.candidate.filter(hired=True).count())
+    return JsonResponse(
+        {
+            "labels": labels,
+            "data": data,
+            "background_color": background_color,
+            "border_color": border_color,
+            "message": _("No data Found..."),
+        },
+        safe=False,
+    )

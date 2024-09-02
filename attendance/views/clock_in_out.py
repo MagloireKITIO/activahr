@@ -4,28 +4,35 @@ clock_in_out.py
 This module is used register endpoints to the check-in check-out functionalities
 """
 
+import ipaddress
+import logging
+
+logger = logging.getLogger(__name__)
 from datetime import date, datetime, timedelta
 
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.translation import gettext_lazy as _
 
-from attendance.models import (
-    Attendance,
-    AttendanceActivity,
-    AttendanceLateComeEarlyOut,
-    GraceTime,
-)
-from attendance.views.views import (
+from attendance.methods.utils import (
     activity_datetime,
-    attendance_validate,
     employee_exists,
     format_time,
     overtime_calculation,
     shift_schedule_today,
     strtime_seconds,
 )
-from base.context_processors import timerunner_enabled
+from attendance.models import (
+    Attendance,
+    AttendanceActivity,
+    AttendanceLateComeEarlyOut,
+    GraceTime,
+)
+from attendance.views.views import attendance_validate
+from base.context_processors import (
+    enable_late_come_early_out_tracking,
+    timerunner_enabled,
+)
 from base.models import AttendanceAllowedIP, EmployeeShiftDay
 from horilla.decorators import hx_request_required, login_required
 from horilla.horilla_middlewares import _thread_locals
@@ -63,14 +70,19 @@ def late_come(attendance, start_time, end_time, shift):
         end_time : attendance day shift end time
 
     """
+    if not enable_late_come_early_out_tracking(None).get("tracking"):
+        return
     request = getattr(_thread_locals, "request", None)
     now_sec = strtime_seconds(attendance.attendance_clock_in.strftime("%H:%M"))
     mid_day_sec = strtime_seconds("12:00")
 
     # Checking gracetime allowance before creating late come
-    if shift.grace_time_id:
+    if shift and shift.grace_time_id:
         # checking grace time in shift, it has the higher priority
-        if shift.grace_time_id.is_active == True:
+        if (
+            shift.grace_time_id.is_active == True
+            and shift.grace_time_id.allowed_clock_in == True
+        ):
             # Setting allowance for the check in time
             now_sec -= shift.grace_time_id.allowed_time_in_secs
     # checking default grace time
@@ -79,8 +91,9 @@ def late_come(attendance, start_time, end_time, shift):
             is_default=True,
             is_active=True,
         ).first()
-        # Setting allowance for the check in time
-        now_sec -= grace_time.allowed_time_in_secs
+        # Setting allowance for the check in time if grace allocate for clock in event
+        if grace_time.allowed_clock_in:
+            now_sec -= grace_time.allowed_time_in_secs
     else:
         pass
     if start_time > end_time and start_time != end_time:
@@ -136,15 +149,14 @@ def clock_in_attendance_and_activity(
         activity.clock_out_date = date_today
         activity.save()
 
-    AttendanceActivity(
+    new_activity = AttendanceActivity.objects.create(
         employee_id=employee,
         attendance_date=attendance_date,
         clock_in_date=date_today,
         shift_day=day,
         clock_in=in_datetime,
         in_datetime=in_datetime,
-    ).save()
-
+    )
     # create attendance if not exist
     attendance = Attendance.objects.filter(
         employee_id=employee, attendance_date=attendance_date
@@ -186,8 +198,7 @@ def clock_in(request):
     """
     allowed_attendance_ips = AttendanceAllowedIP.objects.first()
 
-    # 'not request.__dict__.get("datetime")' used to check if the request is from biometric device
-
+    # 'not request.__dict__.get("datetime")' used to check if the request is from a biometric device
     if (
         not request.__dict__.get("datetime")
         and allowed_attendance_ips
@@ -199,7 +210,19 @@ def clock_in(request):
         if x_forwarded_for:
             ip = x_forwarded_for.split(",")[0]
 
-        if not (ip in allowed_attendance_ips.additional_data["allowed_ips"]):
+        allowed_ips = allowed_attendance_ips.additional_data.get("allowed_ips", [])
+        ip_allowed = False
+        for allowed_ip in allowed_ips:
+            try:
+                if ipaddress.ip_address(ip) in ipaddress.ip_network(
+                    allowed_ip, strict=False
+                ):
+                    ip_allowed = True
+                    break
+            except ValueError:
+                continue
+
+        if not ip_allowed:
             return HttpResponse(_("You cannot mark attendance from this network"))
 
     employee, work_info = employee_exists(request)
@@ -239,7 +262,7 @@ def clock_in(request):
                 )
                 attendance_date = date_yesterday
                 day = day_yesterday
-        clock_in_attendance_and_activity(
+        attendance = clock_in_attendance_and_activity(
             employee=employee,
             date_today=date_today,
             attendance_date=attendance_date,
@@ -315,6 +338,7 @@ def clock_out_attendance_and_activity(employee, date_today, now, out_datetime=No
     attendance_activities = AttendanceActivity.objects.filter(
         employee_id=employee,
     ).order_by("attendance_date", "id")
+    attendance_activity = None  # Initialize attendance_activity
 
     if attendance_activities.filter(clock_out__isnull=True).exists():
         attendance_activity = attendance_activities.filter(
@@ -325,34 +349,37 @@ def clock_out_attendance_and_activity(employee, date_today, now, out_datetime=No
         attendance_activity.out_datetime = out_datetime
         attendance_activity.save()
 
-    attendance_activities = attendance_activities.filter(
-        attendance_date=attendance_activity.attendance_date
-    )
-    # Here calculate the total durations between the attendance activities
+        attendance_activities = attendance_activities.filter(
+            attendance_date=attendance_activity.attendance_date
+        )
+        # Here calculate the total durations between the attendance activities
 
-    duration = 0
-    for attendance_activity in attendance_activities:
-        in_datetime, out_datetime = activity_datetime(attendance_activity)
-        difference = out_datetime - in_datetime
-        days_second = difference.days * 24 * 3600
-        seconds = difference.seconds
-        total_seconds = days_second + seconds
-        duration = duration + total_seconds
-    duration = format_time(duration)
-    # update clock out of attendance
-    attendance = Attendance.objects.filter(employee_id=employee).order_by(
-        "-attendance_date", "-id"
-    )[0]
-    attendance.attendance_clock_out = now + ":00"
-    attendance.attendance_clock_out_date = date_today
-    attendance.attendance_worked_hour = duration
-    # Overtime calculation
-    attendance.attendance_overtime = overtime_calculation(attendance)
+        duration = 0
+        for activity in attendance_activities:
+            in_datetime, out_datetime = activity_datetime(activity)
+            difference = out_datetime - in_datetime
+            days_second = difference.days * 24 * 3600
+            seconds = difference.seconds
+            total_seconds = days_second + seconds
+            duration = duration + total_seconds
+        duration = format_time(duration)
+        # update clock out of attendance
+        attendance = Attendance.objects.filter(employee_id=employee).order_by(
+            "-attendance_date", "-id"
+        )[0]
+        attendance.attendance_clock_out = now + ":00"
+        attendance.attendance_clock_out_date = date_today
+        attendance.attendance_worked_hour = duration
+        # Overtime calculation
+        attendance.attendance_overtime = overtime_calculation(attendance)
 
-    # Validate the attendance as per the condition
-    attendance.attendance_validated = attendance_validate(attendance)
-    attendance.save()
+        # Validate the attendance as per the condition
+        attendance.attendance_validated = attendance_validate(attendance)
+        attendance.save()
 
+        return attendance
+
+    logger.error("No attendance clock in activity found that needs clocking out.")
     return
 
 
@@ -377,7 +404,7 @@ def early_out_create(attendance):
     return late_come_obj
 
 
-def early_out(attendance, start_time, end_time):
+def early_out(attendance, start_time, end_time, shift):
     """
     This method is used to mark the early check-out attendance before the shift ends
     args:
@@ -385,9 +412,32 @@ def early_out(attendance, start_time, end_time):
         start_time : attendance day shift start time
         start_end : attendance day shift end time
     """
+    if not enable_late_come_early_out_tracking(None).get("tracking"):
+        return
 
-    now_sec = strtime_seconds(attendance.attendance_clock_out.strftime("%H:%M"))
+    clock_out_time = attendance.attendance_clock_out
+    if isinstance(clock_out_time, str):
+        clock_out_time = datetime.strptime(clock_out_time, "%H:%M:%S")
+
+    now_sec = strtime_seconds(clock_out_time.strftime("%H:%M"))
     mid_day_sec = strtime_seconds("12:00")
+    # Checking gracetime allowance before creating early out
+    if shift and shift.grace_time_id:
+        if (
+            shift.grace_time_id.is_active == True
+            and shift.grace_time_id.allowed_clock_out == True
+        ):
+            now_sec += shift.grace_time_id.allowed_time_in_secs
+    elif GraceTime.objects.filter(is_default=True, is_active=True).exists():
+        grace_time = GraceTime.objects.filter(
+            is_default=True,
+            is_active=True,
+        ).first()
+        # Setting allowance for the check out time if grace allocate for clock out event
+        if grace_time.allowed_clock_out:
+            now_sec += grace_time.allowed_time_in_secs
+    else:
+        pass
     if start_time > end_time:
         # Early out condition for night shift
         if now_sec < mid_day_sec:
@@ -431,20 +481,18 @@ def clock_out(request):
     minimum_hour, start_time_sec, end_time_sec = shift_schedule_today(
         day=day, shift=shift
     )
-
-    clock_out_attendance_and_activity(
+    attendance = clock_out_attendance_and_activity(
         employee=employee, date_today=date_today, now=now, out_datetime=datetime_now
     )
-    attendance = (
-        Attendance.objects.filter(employee_id=employee)
-        .order_by("id", "attendance_date")
-        .last()
-    )
-    early_out_instance = attendance.late_come_early_out.filter(type="early_out")
-    if not early_out_instance.exists():
-        early_out(
-            attendance=attendance, start_time=start_time_sec, end_time=end_time_sec
-        )
+    if attendance:
+        early_out_instance = attendance.late_come_early_out.filter(type="early_out")
+        if not early_out_instance.exists():
+            early_out(
+                attendance=attendance,
+                start_time=start_time_sec,
+                end_time=end_time_sec,
+                shift=shift,
+            )
 
     script = ""
     hidden_label = ""

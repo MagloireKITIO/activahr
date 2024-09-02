@@ -6,16 +6,15 @@ This module is used to write views related to the survey features
 
 import json
 from datetime import datetime
+from uuid import uuid4
 
 from django.contrib import messages
 from django.core import serializers
-from django.core.cache import cache as CACHE
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models import ProtectedError
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
-from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 
 from base.methods import closest_numbers, get_pagination
@@ -23,7 +22,6 @@ from horilla.decorators import (
     hx_request_required,
     is_recruitment_manager,
     login_required,
-    manager_can_enter,
     permission_required,
 )
 from recruitment.filters import SurveyFilter
@@ -63,16 +61,27 @@ def candidate_survey(request):
     Used to render survey form to the candidate
     """
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB in bytes
-
-    candidate: Candidate = CACHE.get(
-        request.session.session_key + "application-candidate"
-    )
-    if not candidate:
-        return redirect(reverse("open-recruitments"))
-    form = SurveyForm(recruitment=candidate.recruitment_id).form
+    candidate_json = request.session["candidate"]
+    candidate_dict = json.loads(candidate_json)
+    rec_id = candidate_dict[0]["fields"]["recruitment_id"]
+    job_id = candidate_dict[0]["fields"]["job_position_id"]
+    job = JobPosition.objects.get(id=job_id)
+    recruitment = Recruitment.objects.get(id=rec_id)
+    stage_id = candidate_dict[0]["fields"]["stage_id"]
+    candidate_dict[0]["fields"]["recruitment_id"] = recruitment
+    candidate_dict[0]["fields"]["job_position_id"] = job
+    candidate_dict[0]["fields"]["stage_id"] = Stage.objects.get(id=stage_id)
+    candidate = Candidate(**candidate_dict[0]["fields"])
+    form = SurveyForm(recruitment=recruitment).form
     if request.method == "POST":
-        if not candidate.pk:
+        if not Candidate.objects.filter(
+            email=candidate.email, recruitment_id=candidate.recruitment_id
+        ).exists():
             candidate.save()
+        else:
+            candidate = Candidate.objects.filter(
+                email=candidate.email, recruitment_id=candidate.recruitment_id
+            ).first()
         answer = (
             RecruitmentSurveyAnswer()
             if candidate.recruitmentsurveyanswer_set.first() is None
@@ -309,26 +318,26 @@ def application_form(request):
                 candidate_obj.stage_id = stages.order_by("sequence").first()
             messages.success(request, _("Application saved."))
 
-            resume = request.FILES["resume"]
+            resume = request.FILES.get("resume")
+            if resume:
+                resume_path = f"recruitment/resume/{resume.name}"
 
-            resume_path = f"recruitment/resume/{resume.name}"
+                with default_storage.open(resume_path, "wb+") as destination:
+                    for chunk in resume.chunks():
+                        destination.write(chunk)
 
-            with default_storage.open(resume_path, "wb+") as destination:
-                for chunk in resume.chunks():
-                    destination.write(chunk)
-
-            candidate_obj.resume = resume_path
+                candidate_obj.resume = resume_path
             try:
                 profile = request.FILES["profile"] if request.FILES["profile"] else None
-                profile_path = f"recruitment/profile/{profile.name}"
+                profile_path = f"recruitment/profile/{candidate_obj.name.replace(' ', '_')}_{profile.name}_{uuid4()}"
                 with default_storage.open(profile_path, "wb+") as destination:
                     for chunk in profile.chunks():
                         destination.write(chunk)
                 candidate_obj.profile = profile_path
             except:
                 pass
-            CACHE.set(
-                request.session.session_key + "application-candidate", candidate_obj
+            request.session["candidate"] = serializers.serialize(
+                "json", [candidate_obj]
             )
             if RecruitmentSurvey.objects.filter(
                 recruitment_ids=recruitment_id

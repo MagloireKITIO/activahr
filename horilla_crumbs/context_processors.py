@@ -1,11 +1,20 @@
+import uuid
 from urllib.parse import urlparse
 
+from django.apps import apps
 from django.shortcuts import redirect
 from django.urls import Resolver404, path, resolve, reverse
 
 from employee.models import Employee
 from horilla.urls import urlpatterns
-from recruitment.models import Candidate
+
+
+def is_valid_uuid(uuid_string):
+    try:
+        uuid.UUID(uuid_string, version=4)
+        return True
+    except ValueError:
+        return False
 
 
 def _split_path(self, path=None):
@@ -123,11 +132,18 @@ sidebar_urls = [
     "view-time-sheet",
     "templates",
     "sidebar.html",
+    "objective-detailed-view",
+    "mail-automations",
+    "faq-view",
 ]
 remove_urls = [
     "feedback-detailed-view",
     "question-template-detailed-view",
     "employee-view-new",
+    "objective-detailed-view",
+    "ticket-detail",
+    "faq-view",
+    "get-job-positions",
 ]
 
 user_breadcrumbs = {}
@@ -135,15 +151,15 @@ user_breadcrumbs = {}
 
 def breadcrumbs(request):
     base_url = request.build_absolute_uri("/")
-    user_id = str(request.user)
 
-    if user_id not in user_breadcrumbs:
-        user_breadcrumbs[user_id] = [
+    # Initialize breadcrumbs in the session if not already present
+    if "breadcrumbs" not in request.session:
+        request.session["breadcrumbs"] = [
             {"url": base_url, "name": "Horilla", "found": True}
         ]
 
     try:
-        user_breadcrumb = user_breadcrumbs[user_id]
+        breadcrumbs = request.session["breadcrumbs"]
 
         qs = request.META.get("QUERY_STRING", "")
         pairs = qs.split("&")
@@ -151,7 +167,7 @@ def breadcrumbs(request):
         filtered_query_string = "&".join(filtered_pairs)
         emp_query_string = None
 
-        for item in user_breadcrumb:
+        for item in breadcrumbs:
             if item["name"] in ["employee-view", "candidate-view"]:
                 items = item["url"].split("?", 1)
                 if len(items) > 1:
@@ -161,7 +177,14 @@ def breadcrumbs(request):
         parts = _split_path(request)
         path = base_url
 
-        candidates = Candidate.objects.filter(is_active=True)
+        if apps.is_installed("recruitment"):
+            from recruitment.models import Candidate
+
+            candidates = Candidate.objects.filter(is_active=True)
+
+        else:
+            candidates = None
+
         employees = Employee.objects.all()
 
         if len(parts) > 1:
@@ -194,8 +217,8 @@ def breadcrumbs(request):
                 ]
 
         if len(parts) == 0:
-            user_breadcrumbs[user_id].clear()
-            user_breadcrumb.append({"url": base_url, "name": "Horilla", "found": True})
+            request.session["breadcrumbs"].clear()
+            breadcrumbs.append({"url": base_url, "name": "Horilla", "found": True})
 
         if len(parts) > 1:
             last_path = parts[-1]
@@ -205,10 +228,9 @@ def breadcrumbs(request):
                 or parts[-2] == "candidate-view"
                 or parts[-2] == "view-payslip"
             ):
-                breadcrumbs = user_breadcrumbs[user_id]
                 first_path = breadcrumbs[0]
-                user_breadcrumbs[user_id].clear()
-                user_breadcrumbs[user_id].append(first_path)
+                request.session["breadcrumbs"].clear()
+                request.session["breadcrumbs"].append(first_path)
         for i, item in enumerate(parts):
             path = path + item + "/"
             parsed_url = urlparse(path)
@@ -216,12 +238,12 @@ def breadcrumbs(request):
             try:
                 resolver_match = resolve(check_path)
                 found = True
-            except Resolver404 as e:
+            except Resolver404:
                 found = False
 
             new_dict = {"url": path, "name": item, "found": found}
 
-            if item.isdigit():
+            if item.isdigit() or is_valid_uuid(item):
                 # Handle the case when item is a digit (e.g., an ID)
                 current_url = resolve(request.path_info)
                 url_kwargs = current_url.kwargs
@@ -229,15 +251,15 @@ def breadcrumbs(request):
 
                 if model_value:
                     try:
-                        object = model_value.objects.get(id=item)
-                        new_dict["name"] = str(object)
+                        obj = model_value.objects.get(id=item)  # completed
+                        new_dict["name"] = str(obj)
                     except:
                         pass
 
             key = "HTTP_HX_REQUEST"
-            names = [d["name"] for d in user_breadcrumb]
+            names = [d["name"] for d in breadcrumbs]
             if (
-                new_dict not in user_breadcrumb
+                new_dict not in breadcrumbs
                 and new_dict["name"] not in remove_urls + names
                 and key not in request.META.keys()
                 and not new_dict["name"].isdigit()
@@ -245,10 +267,10 @@ def breadcrumbs(request):
                 if new_dict["name"] in ["employee-view", "candidate-view"]:
                     new_dict["url"] = f'{new_dict["url"]}?{emp_query_string}'
 
-                user_breadcrumb.append(new_dict)
+                breadcrumbs.append(new_dict)
 
         try:
-            prev_url = user_breadcrumb[-1]
+            prev_url = breadcrumbs[-1]
             prev_url["url"] = prev_url["url"].split("?")[0]
             if filtered_query_string:
                 prev_url["url"] = f'{prev_url["url"]}?{filtered_query_string}'
@@ -257,14 +279,13 @@ def breadcrumbs(request):
         except:
             pass
 
-        user_breadcrumbs[user_id] = user_breadcrumb
+        request.session["breadcrumbs"] = breadcrumbs
 
     except Exception as e:
-        user_breadcrumb[user_id].clear()
-        user_breadcrumbs[user_id] = [
+        request.session["breadcrumbs"] = [
             {"url": base_url, "name": "Horilla", "found": True}
         ]
-    return {"breadcrumbs": user_breadcrumbs[user_id]}
+    return {"breadcrumbs": request.session["breadcrumbs"]}
 
 
 urlpatterns.append(

@@ -6,7 +6,7 @@ This module is used to register the endpoints to the attendance requests
 
 import copy
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time
 from urllib.parse import parse_qs
 
 from django.contrib import messages
@@ -22,10 +22,14 @@ from attendance.forms import (
     BulkAttendanceRequestForm,
     NewRequestForm,
 )
-from attendance.methods.differentiate import get_diff_dict
+from attendance.methods.utils import (
+    get_diff_dict,
+    get_employee_last_name,
+    paginator_qry,
+    shift_schedule_today,
+)
 from attendance.models import Attendance, AttendanceActivity, AttendanceLateComeEarlyOut
 from attendance.views.clock_in_out import early_out, late_come
-from attendance.views.views import paginator_qry, shift_schedule_today
 from base.methods import (
     choosesubordinates,
     closest_numbers,
@@ -37,15 +41,6 @@ from base.models import EmployeeShift, EmployeeShiftDay
 from employee.models import Employee
 from horilla.decorators import hx_request_required, login_required, manager_can_enter
 from notifications.signals import notify
-
-
-def get_employee_last_name(attendance):
-    """
-    This method is used to return the last name
-    """
-    if attendance.employee_id.employee_last_name:
-        return attendance.employee_id.employee_last_name
-    return ""
 
 
 @login_required
@@ -405,7 +400,9 @@ def approve_validate_attendance_request(request, attendance_id):
             attendance, start_time=start_time_sec, end_time=end_time_sec, shift=shift
         )
     if attendance.attendance_clock_out:
-        early_out(attendance, start_time=start_time_sec, end_time=end_time_sec)
+        early_out(
+            attendance, start_time=start_time_sec, end_time=end_time_sec, shift=shift
+        )
 
     messages.success(request, _("Attendance request has been approved"))
     employee = attendance.employee_id
@@ -602,7 +599,12 @@ def bulk_approve_attendance_request(request):
                 shift=shift,
             )
         if attendance.attendance_clock_out:
-            early_out(attendance, start_time=start_time_sec, end_time=end_time_sec)
+            early_out(
+                attendance,
+                start_time=start_time_sec,
+                end_time=end_time_sec,
+                shift=shift,
+            )
 
         messages.success(request, _("Attendance request has been approved"))
         employee = attendance.employee_id
@@ -755,11 +757,13 @@ def get_employee_shift(request):
     if request.GET.get("bulk") and eval(request.GET.get("bulk")):
         form = BulkAttendanceRequestForm()
     form.fields["shift_id"].queryset = EmployeeShift.objects.all()
+    form.fields["shift_id"].widget.attrs["hx-trigger"] = "load,change"
     form.fields["shift_id"].initial = shift
     shift_id = render_to_string(
         "requests/attendance/form_field.html",
         {
             "field": form["shift_id"],
+            "shift": shift,
         },
     )
     return HttpResponse(f"{shift_id}")

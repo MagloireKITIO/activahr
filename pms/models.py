@@ -1,8 +1,15 @@
+import operator
+from datetime import date
+from typing import Iterable
+
 from dateutil.relativedelta import relativedelta
 from django import forms
+from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models.signals import post_delete, post_save, pre_save
+from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 
 from base.horilla_company_manager import HorillaCompanyManager
@@ -11,6 +18,8 @@ from employee.models import Employee
 from horilla.models import HorillaModel
 from horilla_audit.methods import get_diff
 from horilla_audit.models import HorillaAuditInfo, HorillaAuditLog
+from horilla_automations.methods.methods import get_model_class
+from horilla_views.cbv_methods import render_template
 
 """Objectives and key result section"""
 
@@ -47,6 +56,7 @@ class KeyResult(HorillaModel):
     )
     target_value = models.IntegerField(null=True, blank=True, default=100)
     duration = models.IntegerField(null=True, blank=True)
+    archive = models.BooleanField(default=False)
     history = HorillaAuditLog(bases=[HorillaAuditInfo])
     company_id = models.ForeignKey(
         Company,
@@ -109,7 +119,7 @@ class Objective(HorillaModel):
     )
     duration = models.IntegerField(default=1, validators=[MinValueValidator(0)])
     add_assignees = models.BooleanField(default=False)
-    archive = models.BooleanField(default=False, null=True, blank=True)
+    archive = models.BooleanField(default=False)
     history = HorillaAuditLog(bases=[HorillaAuditInfo])
     company_id = models.ForeignKey(
         Company,
@@ -194,6 +204,13 @@ class EmployeeObjective(HorillaModel):
     archive = models.BooleanField(default=False)
     objects = HorillaCompanyManager("employee_id__employee_work_info__company_id")
 
+    class Meta:
+        """
+        Meta class for additional options
+        """
+
+        unique_together = ("employee_id", "objective_id")
+
     def update_objective_progress(self):
         """
         used for updating progress percentage when current value of key result change
@@ -218,6 +235,10 @@ class EmployeeObjective(HorillaModel):
                 self.end_date = self.start_date + relativedelta(months=duration)
             elif self.objective_id.duration_unit == "years":
                 self.end_date = self.start_date + relativedelta(years=duration)
+        # Add assignees to the objective
+        objective = self.objective_id
+        if self.employee_id not in objective.assignees.all():
+            objective.assignees.add(self.employee_id)
         super().save(*args, **kwargs)
 
     def tracking(self):
@@ -357,12 +378,12 @@ class EmployeeKeyResult(models.Model):
         super().save(*args, **kwargs)
         self.employee_objective_id.update_objective_progress()
 
-    # class meta:
-    #     """
-    #     Meta class to add some additional options
-    #     """
+    class meta:
+        """
+        Meta class to add some additional options
+        """
 
-    #     unique_together = ("key_result_id", "employee_objective_id")
+        unique_together = ("key_result_id", "employee_objective_id")
 
 
 """360degree feedback section"""
@@ -372,7 +393,7 @@ class QuestionTemplate(HorillaModel):
     """question template creation"""
 
     question_template = models.CharField(
-        max_length=100, null=False, blank=False, unique=True
+        max_length=100, null=False, blank=False, unique=True, verbose_name="Title"
     )
     company_id = models.ManyToManyField(Company, blank=True, verbose_name=_("Company"))
 
@@ -709,6 +730,165 @@ class MeetingsAnswer(models.Model):
 
     def __str__(self):
         return f"{self.employee_id.employee_first_name} - {self.answer}"
+
+
+class EmployeeBonusPoint(models.Model):
+    employee_id = models.ForeignKey(
+        Employee,
+        on_delete=models.DO_NOTHING,
+        related_name="employe_bonus_point",
+        null=True,
+        blank=True,
+        verbose_name="Employee",
+    )
+    bonus_point = models.IntegerField(default=0)
+    instance = models.CharField(max_length=150, null=True, blank=True)
+    based_on = models.CharField(max_length=150)
+
+    def __str__(self):
+        return f"{self.employee_id.employee_first_name} - {self.bonus_point}"
+
+    def action_template(self):
+        """
+        This method for get custom column for managers.
+        """
+        return render_template(
+            path="bonus/bonus_point_action.html",
+            context={"instance": self},
+        )
+
+
+class BonusPointSetting(models.Model):
+    MODEL_CHOICES = [
+        ("pms.models.EmployeeObjective", _("Objective")),
+        ("pms.models.EmployeeKeyResult", _("Key Result")),
+    ]
+    if apps.is_installed("project"):
+        MODEL_CHOICES += [
+            ("project.models.Task", _("Task")),
+            ("project.models.Project", _("Project")),
+        ]
+    BONUS_FOR = [
+        ("completed", _("Completing")),
+        ("Closed", _("Closing")),
+    ]
+    CONDITIONS = [
+        ("=", "="),
+        (">", ">"),
+        ("<", "<"),
+        ("<=", "<="),
+        (">=", ">="),
+    ]
+    FIELD_1 = [
+        ("complition_date", _("Completion Date")),
+    ]
+    FIELD_2 = [
+        ("end_date", _("End Date")),
+    ]
+    APPLECABLE_FOR = [
+        ("owner", _("Owner")),
+        ("members", _("Members")),
+        ("managers", _("Managers")),
+    ]
+    model = models.CharField(max_length=100, choices=MODEL_CHOICES, null=False)
+    applicable_for = models.CharField(
+        max_length=50, choices=APPLECABLE_FOR, null=True, blank=True
+    )
+    bonus_for = models.CharField(max_length=25, choices=BONUS_FOR)
+    field_1 = models.CharField(max_length=25, choices=FIELD_1, null=True, blank=True)
+    conditions = models.CharField(
+        max_length=25, choices=CONDITIONS, null=True, blank=True
+    )
+    field_2 = models.CharField(max_length=25, choices=FIELD_2, null=True, blank=True)
+    points = models.IntegerField(default=0, validators=[MinValueValidator(0)])
+    is_active = models.BooleanField(default=True)
+
+    def get_model_display(self):
+        """
+        Display model
+        """
+        return dict(BonusPointSetting.MODEL_CHOICES).get(self.model)
+
+    def get_bonus_for_display(self):
+        """
+        Display bonus_for
+        """
+        return dict(BonusPointSetting.BONUS_FOR).get(self.bonus_for)
+
+    def get_field_1_display(self):
+        """
+        Display field_1
+        """
+        return dict(BonusPointSetting.FIELD_1).get(self.field_1)
+
+    def get_field_2_display(self):
+        """
+        Display field_2
+        """
+        return dict(BonusPointSetting.FIELD_2).get(self.field_2)
+
+    def get_applicable_for_display(self):
+        """
+        Display applicable_for
+        """
+        return dict(BonusPointSetting.APPLECABLE_FOR).get(self.applicable_for)
+
+    def get_condition(self):
+        """
+        Get the condition for bonus
+        """
+        return f" {dict(BonusPointSetting.FIELD_1).get(self.field_1)} {self.conditions} {dict(BonusPointSetting.FIELD_2).get(self.field_2)}"
+
+    def action_template(self):
+        """
+        This method for get custom column for managers.
+        """
+
+        return render_template(
+            path="bonus/bonus_seetting_action.html",
+            context={"instance": self},
+        )
+
+    def is_active_toggle(self):
+        """
+        For toggle is_active field
+        """
+        return render_template(
+            path="bonus/is_active_toggle.html",
+            context={"instance": self},
+        )
+
+    def create_employee_bonus(self, employee, field_1, field_2, instance):
+        """
+        For creating employee bonus
+        """
+        operator_mapping = {
+            "=": operator.eq,
+            "!=": operator.ne,
+            "<": operator.lt,
+            ">": operator.gt,
+            "<=": operator.le,
+            ">=": operator.ge,
+        }
+        if (
+            operator_mapping[self.conditions](field_1, field_2)
+        ) and not EmployeeBonusPoint.objects.filter(
+            employee_id=employee,
+            instance=instance,
+            based_on=(f"{self.get_bonus_for_display()} {instance}"),
+        ).exists():
+            EmployeeBonusPoint(
+                employee_id=employee,
+                based_on=(f"{self.get_bonus_for_display()} {instance}"),
+                bonus_point=self.points,
+                instance=instance,
+            ).save()
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Bonus point {self.get_model_display()}"
 
 
 def manipulate_existing_data():

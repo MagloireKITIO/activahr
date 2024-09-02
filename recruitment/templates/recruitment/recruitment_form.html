@@ -28,9 +28,9 @@
                 return option.text;
             }
             var $option = $('<span></span>').text(option.text);
-            if (option.id === 'create') {
+            {% comment %} if (option.id === 'create') {
                 $option.addClass('text-info');
-            }
+            } {% endcomment %}
             return $option;
         }
         $('[name = "skills"]').select2({
@@ -146,7 +146,7 @@
                     >
                     {{form.skills}}
                 </div>
-                <div class="col-12 col-sm-12 col-md-12 col-lg-6">
+                <div class="col-12 col-sm-12 col-md-12 col-lg-4">
                     <label
                         class="oh-label"
                         for="id_is_published"
@@ -157,6 +157,28 @@
                         <div class="oh-switch">{{form.is_published}}</div>
                     </div>
                 </div>
+                <div class="col-12 col-sm-12 col-md-12 col-lg-4">
+                    <label
+                        class="oh-label"
+                        for="id_optional_profile_image"
+                        title="{{form.optional_profile_image.help_text|safe}}"
+                        >{% trans "Optional Profile Image?" %}</label
+                    >
+                    <div class="w-100 d-flex" style="align-items: center">
+                        <div class="oh-switch">{{form.optional_profile_image}}</div>
+                    </div>
+                </div>
+                <div class="col-12 col-sm-12 col-md-12 col-lg-4">
+                    <label
+                        class="oh-label"
+                        for="id_optional_optional_resume"
+                        title="{{form.optional_resume.help_text|safe}}"
+                        >{% trans "Optional Resume?" %}</label
+                    >
+                    <div class="w-100 d-flex" style="align-items: center">
+                        <div class="oh-switch">{{form.optional_resume}}</div>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="d-flex flex-row-reverse w-100 align-items-right mt-4">
@@ -164,7 +186,7 @@
                 type="submit"
                 class="oh-btn oh-btn--secondary pl-5 pr-5"
                 hx-post="{% url 'recruitment-create' %}"
-                hx-target="#addRecruitmentModalBody"
+                hx-target="#objectCreateModalTarget"
             >
                 {% trans "Add" %}
             </button>

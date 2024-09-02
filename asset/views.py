@@ -55,14 +55,18 @@ from base.methods import (
 )
 from base.models import Company
 from base.views import paginator_qry
-from employee.models import EmployeeWorkInformation
+from employee.models import Employee, EmployeeWorkInformation
+from horilla import settings
 from horilla.decorators import (
     hx_request_required,
     login_required,
     manager_can_enter,
+    owner_can_enter,
     permission_required,
 )
 from horilla.group_by import group_by_queryset
+from horilla.horilla_settings import HORILLA_DATE_FORMATS
+from horilla.methods import horilla_users_with_perms
 from notifications.signals import notify
 
 
@@ -192,6 +196,7 @@ def asset_update(request, asset_id):
             asset_form.save()
             messages.success(request, _("Asset Updated"))
     context = {
+        "instance": instance,
         "asset_form": asset_form,
         "asset_under": asset_under,
         "pg": previous_data,
@@ -573,7 +578,8 @@ def asset_request_approve(request, req_id):
                 verb_es="¡Su solicitud de activo ha sido aprobada!",
                 verb_fr="Votre demande d'actif a été approuvée !",
                 redirect=reverse("asset-request-allocation-view")
-                + f"?asset_request_date={asset_request.asset_request_date}&asset_request_status={asset_request.asset_request_status}",
+                + f"?asset_request_date={asset_request.asset_request_date}\
+                &asset_request_status={asset_request.asset_request_status}",
                 icon="bag-check",
             )
             return HttpResponse("<script>window.location.reload()</script>")
@@ -611,7 +617,8 @@ def asset_request_reject(request, req_id):
         verb_es="¡Se ha rechazado su solicitud de activo!",
         verb_fr="Votre demande d'actif a été rejetée !",
         redirect=reverse("asset-request-allocation-view")
-        + f"?asset_request_date={asset_request.asset_request_date}&asset_request_status={asset_request.asset_request_status}",
+        + f"?asset_request_date={asset_request.asset_request_date}\
+        &asset_request_status={asset_request.asset_request_status}",
         icon="bag-check",
     )
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
@@ -654,15 +661,40 @@ def asset_allocate_creation(request):
     return render(request, "request_allocation/asset_allocation_creation.html", context)
 
 
+@login_required
 def asset_allocate_return_request(request, asset_id):
     """
     Handle the initiation of a return request for an allocated asset.
     """
+    previous_data = request.GET.urlencode()
     asset_assign = AssetAssignment.objects.get(id=asset_id)
     asset_assign.return_request = True
     asset_assign.save()
     message = _("Return request for {} initiated.").format(asset_assign.asset_id)
-    messages.info(request, message)
+    messages.success(request, message)
+    permed_users = horilla_users_with_perms("asset.change_assetassignment")
+    notify.send(
+        request.user.employee_get,
+        recipient=permed_users,
+        verb=f"Return request for {asset_assign.asset_id} initiated from\
+            {asset_assign.assigned_to_employee_id}",
+        verb_ar=f"تم بدء طلب الإرجاع للمورد {asset_assign.asset_id}\
+            من الموظف {asset_assign.assigned_to_employee_id}",
+        verb_de=f"Rückgabewunsch für {asset_assign.asset_id} vom Mitarbeiter\
+            {asset_assign.assigned_to_employee_id} initiiert",
+        verb_es=f"Solicitud de devolución para {asset_assign.asset_id}\
+            iniciada por el empleado {asset_assign.assigned_to_employee_id}",
+        verb_fr=f"Demande de retour pour {asset_assign.asset_id}\
+            initiée par l'employé {asset_assign.assigned_to_employee_id}",
+        redirect=reverse("asset-request-allocation-view")
+        + f"?assigned_to_employee_id={asset_assign.assigned_to_employee_id}&\
+        asset_id={asset_assign.asset_id}&assigned_date={asset_assign.assigned_date}",
+        icon="bag-check",
+    )
+    if request.META.get("HTTP_HX_REQUEST") == "true":
+        url = reverse("asset-request-allocation-view-search-filter")
+        return redirect(f"{url}?{previous_data}")
+
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
@@ -1140,26 +1172,12 @@ def asset_export_excel(request):
                         )
                     else:
                         date_format = "MMM. D, YYYY"
-                    # Define date formats
-                    date_formats = {
-                        "DD-MM-YYYY": "%d-%m-%Y",
-                        "DD.MM.YYYY": "%d.%m.%Y",
-                        "DD/MM/YYYY": "%d/%m/%Y",
-                        "MM/DD/YYYY": "%m/%d/%Y",
-                        "YYYY-MM-DD": "%Y-%m-%d",
-                        "YYYY/MM/DD": "%Y/%m/%d",
-                        "MMMM D, YYYY": "%B %d, %Y",
-                        "DD MMMM, YYYY": "%d %B, %Y",
-                        "MMM. D, YYYY": "%b. %d, %Y",
-                        "D MMM. YYYY": "%d %b. %Y",
-                        "dddd, MMMM D, YYYY": "%A, %B %d, %Y",
-                    }
 
                     # Convert the string to a datetime.date object
                     start_date = datetime.strptime(str(value), "%Y-%m-%d").date()
 
-                    # Print the formatted date for each format
-                    for format_name, format_string in date_formats.items():
+                    # The formatted date for each format
+                    for format_name, format_string in HORILLA_DATE_FORMATS.items():
                         if format_name == date_format:
                             value = start_date.strftime(format_string)
 
@@ -1420,7 +1438,7 @@ def asset_available_chart(request):
         "labels": labels,
         "dataset": dataset,
         "message": _("Oops!! No Asset found..."),
-        "emptyImageSrc": "/static/images/ui/asset.png",
+        "emptyImageSrc": f"/{settings.STATIC_URL}images/ui/asset.png",
     }
     return JsonResponse(response)
 
@@ -1450,7 +1468,7 @@ def asset_category_chart(request):
         "labels": labels,
         "dataset": dataset,
         "message": _("Oops!! No Asset found..."),
-        "emptyImageSrc": "/static/images/ui/asset.png",
+        "emptyImageSrc": f"/{settings.STATIC_URL}images/ui/asset.png",
     }
     return JsonResponse(response)
 
@@ -1563,6 +1581,100 @@ def asset_history_search(request):
             "filter_dict": data_dict,
             "field": field,
             "pd": previous_data,
+            "requests_ids": requests_ids,
+        },
+    )
+
+
+@login_required
+@owner_can_enter("asset.view_asset", Employee)
+def asset_tab(request, emp_id):
+    """
+    This function is used to view asset tab of an employee in employee individual view.
+
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    emp_id (int): The id of the employee.
+
+    Returns: return asset-tab template
+
+    """
+    employee = Employee.objects.get(id=emp_id)
+    assets_requests = employee.requested_employee.all()
+    assets = employee.allocated_employee.all()
+    assets_ids = (
+        json.dumps([instance.id for instance in assets]) if assets else json.dumps([])
+    )
+    context = {
+        "assets": assets,
+        "requests": assets_requests,
+        "assets_ids": assets_ids,
+        "employee": emp_id,
+    }
+    return render(request, "tabs/asset-tab.html", context=context)
+
+
+@login_required
+@hx_request_required
+def profile_asset_tab(request, emp_id):
+    """
+    This function is used to view asset tab of an employee in employee profile view.
+
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    emp_id (int): The id of the employee.
+
+    Returns: return profile-asset-tab template
+
+    """
+    employee = Employee.objects.get(id=emp_id)
+    assets = employee.allocated_employee.all()
+    assets_ids = json.dumps([instance.id for instance in assets])
+    context = {
+        "assets": assets,
+        "assets_ids": assets_ids,
+    }
+    return render(request, "tabs/profile-asset-tab.html", context=context)
+
+
+@login_required
+@hx_request_required
+def asset_request_tab(request, emp_id):
+    """
+    This function is used to view asset request tab of an employee in employee individual view.
+
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    emp_id (int): The id of the employee.
+
+    Returns: return asset-request-tab template
+
+    """
+    employee = Employee.objects.get(id=emp_id)
+    assets_requests = employee.requested_employee.all()
+    context = {"asset_requests": assets_requests, "emp_id": emp_id}
+    return render(request, "tabs/asset-request-tab.html", context=context)
+
+
+@login_required
+def dashboard_asset_request_approve(request):
+
+    asset_requests = AssetRequest.objects.filter(
+        asset_request_status="Requested", requested_employee_id__is_active=True
+    )
+    asset_requests = filtersubordinates(
+        request,
+        asset_requests,
+        "asset.change_assetrequest",
+        field="requested_employee_id",
+    )
+    requests_ids = json.dumps([instance.id for instance in asset_requests])
+
+    return render(
+        request,
+        "request_and_approve/asset_requests_approve.html",
+        {
+            "asset_requests": asset_requests,
             "requests_ids": requests_ids,
         },
     )

@@ -17,10 +17,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from django.contrib import messages
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
+from django.utils import timezone
+from django.utils import timezone as django_timezone
 from django.utils.translation import gettext as __
 from django.utils.translation import gettext_lazy as _
 from zk import ZK
 
+from attendance.methods.utils import Request
 from attendance.views.clock_in_out import clock_in, clock_out
 from base.methods import get_key_instances, get_pagination
 from employee.models import Employee, EmployeeWorkInformation
@@ -104,50 +107,6 @@ def biometric_set_time(conn):
     conn.set_time(new_time)
 
 
-class META:
-    """
-    Provides access to HTTP metadata keys.
-    """
-
-    @classmethod
-    def keys(cls):
-        """
-        Retrieve the list of available HTTP metadata keys.
-
-        Returns:
-            list: A list of HTTP metadata keys.
-        """
-        return ["HTTP_HX_REQUEST"]
-
-
-class Request:
-    """
-    Represents a request for clock-in or clock-out.
-
-    Attributes:
-    - user: The user associated with the request.
-    - date: The date of the request.
-    - time: The time of the request.
-    - path: The path associated with the request (default: "/").
-    - session: The session data associated with the request (default: {"title": None}).
-    """
-
-    def __init__(
-        self,
-        user,
-        date,
-        time,
-        datetime,
-    ) -> None:
-        self.user = user
-        self.path = "/"
-        self.session = {"title": None}
-        self.date = date
-        self.time = time
-        self.datetime = datetime
-        self.META = META()
-
-
 class ZKBioAttendance(Thread):
     """
     Represents a thread for capturing live attendance data from a ZKTeco biometric device.
@@ -193,7 +152,10 @@ class ZKBioAttendance(Thread):
                             if attendance:
                                 user_id = attendance.user_id
                                 punch_code = attendance.punch
-                                date_time = attendance.timestamp
+                                date_time = django_timezone.make_aware(
+                                    attendance.timestamp
+                                )
+                                # date_time = attendance.timestamp
                                 date = date_time.date()
                                 time = date_time.time()
                                 device.last_fetch_date = date
@@ -1260,16 +1222,19 @@ def edit_cosec_user(request, user_id, device_id):
         day = int(user["validity-date-dd"])
         date_object = datetime(year, month, day)
         formatted_date = date_object.strftime("%Y-%m-%d")
-        form = COSECUserForm(
-            initial={
-                "name": user["name"],
-                "user_active": bool(int(user["user-active"])),
-                "vip": bool(int(user["vip"])),
-                "validity_enable": bool(int(user["validity-enable"])),
-                "validity_end_date": formatted_date,
-                "by_pass_finger": bool(int(user["by-pass-finger"])),
-            }
-        )
+        initial_data = {
+            "name": user["name"],
+            "user_active": bool(int(user["user-active"])),
+            "vip": bool(int(user["vip"])),
+            "validity_enable": bool(int(user["validity-enable"])),
+            "validity_end_date": formatted_date,
+        }
+
+        if "by-pass-finger" in user:
+            initial_data["by_pass_finger"] = bool(int(user["by-pass-finger"]))
+
+        form = COSECUserForm(initial=initial_data)
+
         if request.method == "POST":
             form = COSECUserForm(request.POST)
             if form.is_valid():
@@ -1732,7 +1697,7 @@ def zk_biometric_device_attendance(device_id):
             for attendance in filtered_attendances:
                 user_id = attendance.user_id
                 punch_code = attendance.punch
-                date_time = attendance.timestamp
+                date_time = django_timezone.make_aware(attendance.timestamp)
                 date = date_time.date()
                 time = date_time.time()
                 bio_id = BiometricEmployees.objects.filter(user_id=user_id).first()
@@ -1773,11 +1738,10 @@ def anviz_biometric_device_attendance(device_id):
         for attendance in attendance_records["payload"]["list"]:
             badge_id = attendance["employee"]["workno"]
             punch_code = attendance["checktype"]
-            date_time_obj = datetime.strptime(
+            date_time_utc = datetime.strptime(
                 attendance["checktime"], "%Y-%m-%dT%H:%M:%S%z"
             )
-            target_timezone = pytz.timezone(settings.TIME_ZONE)
-            date_time_obj = date_time_obj.astimezone(target_timezone)
+            date_time_obj = date_time_utc.astimezone(timezone.get_current_timezone())
             employee = Employee.objects.filter(badge_id=badge_id).first()
             if employee:
                 request_data = Request(
@@ -1853,7 +1817,7 @@ def cosec_biometric_device_attendance(device_id):
             user=employee.employee_id.employee_user_id,
             date=attendance_date,
             time=attendance_time,
-            datetime=attendance_datetime,
+            datetime=django_timezone.make_aware(attendance_datetime),
         )
 
         try:

@@ -1,4 +1,4 @@
-{% extends 'index.html' %} {% load i18n %} {% load yes_no %} {% load static %} {% block content %} {% load recruitmentfilters %}
+{% extends 'index.html' %} {% load i18n %} {% load horillafilters %} {% load static %} {% block content %} {% load recruitmentfilters %}
 <script>
   function submitForm(elem) {
     $(elem).siblings(".add_more_submit").click();
@@ -101,7 +101,7 @@
     {% endif %}
 
     <a href="{% url 'rec-candidate-update' candidate.id %}" class="mt-1 mb-1 m-3">
-      <img src="/static/images/ui/edit_btn.png" style="width: 25px; height: auto;" title="{% trans 'Edit' %}">
+      <img src="{% static "/images/ui/edit_btn.png" %}" style="width: 25px; height: auto;" title="{% trans 'Edit' %}">
     </a>
       {% if perms.recruitment.change_candidate %}
         <div class='d-flex float-end ms-4'>
@@ -588,7 +588,7 @@
           {% if candidate.resume %}
           <iframe
             id="iframe_pdf"
-            src="/media/{{candidate.resume}}"
+            src="{{candidate.resume.url}}"
             style="width: 100%; height: 500px"
             frameborder="0"
           ></iframe>

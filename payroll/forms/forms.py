@@ -22,7 +22,6 @@ from payroll.models.models import (
     PayrollGeneralSetting,
     ReimbursementFile,
     ReimbursementrequestComment,
-    WorkRecord,
 )
 
 
@@ -142,6 +141,9 @@ class ContractForm(ModelForm):
         first = PayrollGeneralSetting.objects.first()
         if first and self.instance.pk is None:
             self.initial["notice_period_in_days"] = first.notice_period
+        self.fields["contract_document"].widget.attrs[
+            "accept"
+        ] = ".jpg, .jpeg, .png, .pdf"
 
     def as_p(self):
         """
@@ -153,20 +155,6 @@ class ContractForm(ModelForm):
 
     def get_dynamic_hx_post_url(self, instance):
         return f"/payroll/update-contract-status/{instance.pk}"
-
-
-class WorkRecordForm(ModelForm):
-    """
-    WorkRecordForm
-    """
-
-    class Meta:
-        """
-        Meta class for additional options
-        """
-
-        fields = "__all__"
-        model = WorkRecord
 
 
 class ReimbursementRequestCommentForm(ModelForm):
@@ -198,6 +186,7 @@ class reimbursementCommentForm(ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["files"] = MultipleFileField(label="files")
         self.fields["files"].required = False
+        self.fields["files"].widget.attrs["accept"] = ".jpg, .jpeg, .png, .pdf"
 
     def as_p(self):
         """

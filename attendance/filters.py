@@ -9,6 +9,7 @@ import uuid
 
 import django_filters
 from django import forms
+from django.apps import apps
 from django.db.models import OuterRef, Subquery
 from django.forms import DateTimeInput
 from django.utils.translation import gettext_lazy as _
@@ -18,7 +19,6 @@ from attendance.models import (
     AttendanceActivity,
     AttendanceLateComeEarlyOut,
     AttendanceOverTime,
-    PenaltyAccount,
     strtime_seconds,
 )
 from base.filters import FilterSet
@@ -246,16 +246,6 @@ class LateComeEarlyOutFilter(FilterSet):
             self.form.fields[field].widget.attrs["id"] = f"{uuid.uuid4()}"
 
 
-class PenaltyFilter(FilterSet):
-    """
-    PenaltyFilter
-    """
-
-    class Meta:
-        model = PenaltyAccount
-        fields = "__all__"
-
-
 class AttendanceActivityFilter(FilterSet):
     """
     Filter set class for AttendanceActivity model
@@ -348,7 +338,7 @@ class AttendanceFilters(FilterSet):
     """
 
     id = django_filters.NumberFilter(field_name="id")
-    search = django_filters.CharFilter(method=filter_by_name)
+    search = django_filters.CharFilter(method="filter_by_name")
     employee = django_filters.CharFilter(field_name="employee_id__id")
     date_attendance = django_filters.DateFilter(field_name="attendance_date")
     employee_id = django_filters.ModelMultipleChoiceFilter(
@@ -472,6 +462,7 @@ class AttendanceFilters(FilterSet):
             "attendance_validated",
             "is_validate_request",
             "is_validate_request_approved",
+            "is_bulk_request",
             "at_work_second__lte",
             "at_work_second__gte",
             "overtime_second__lte",

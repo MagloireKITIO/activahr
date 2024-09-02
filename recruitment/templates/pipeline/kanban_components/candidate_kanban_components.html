@@ -1,4 +1,4 @@
-{% load i18n recruitmentfilters static %}
+{% load i18n static recruitmentfilters horillafilters %}
 {% for cand in candidates %}
     <div
         class="oh-kanban__card candidate change-cand"
@@ -8,6 +8,8 @@
         style="cursor: pointer;overflow: visible;"
         data-candidate = "{{cand.name}}"
         data-job-position ="{{cand.job_position_id}}"
+        data-pre_stage_id ="{{cand.stage_id.id}}"
+        data-stage_order = '{{cand.recruitment_id.ordered_stages|to_json|safe}}'
         onclick="window.location.href = `{% url 'candidate-view-individual' cand.id %}`"
     >
         <div class="oh-kanban__card-head align-items-baseline pb-0" {% if cand.is_offer_rejected %}
@@ -132,30 +134,32 @@
                     >
                 </li>
                 {% endif %}
-                {% if perms.recruitment.add_rejectedcandidate or request.user|is_stagemanager %}
-                <li class="oh-dropdown__item">
-                    <a
-                    class="oh-dropdown__link oh-dropdown__link--secondary"
-                    hx-target="#rejectModalBody"
-                        hx-swap="innerHTML"
-                        class="oh-btn oh-btn--light"
-                        data-toggle="oh-modal-toggle"
-                        data-target="#rejectModal"
-                        hx-get="{% url 'add-to-rejected-candidates' %}?candidate_id={{cand.id}}"
-                        {% if cand.is_offer_rejected %}
-                        title="{% trans "Added In Rejected Candidates" %}"
+                {% if onboarding|app_installed %}
+                    {% if perms.recruitment.add_rejectedcandidate or request.user|is_stagemanager %}
+                    <li class="oh-dropdown__item">
+                        <a
+                        class="oh-dropdown__link oh-dropdown__link--secondary"
+                        hx-target="#rejectModalBody"
+                            hx-swap="innerHTML"
+                            class="oh-btn oh-btn--light"
+                            data-toggle="oh-modal-toggle"
+                            data-target="#rejectModal"
+                            hx-get="{% url 'add-to-rejected-candidates' %}?candidate_id={{cand.id}}"
+                            {% if cand.is_offer_rejected %}
+                            title="{% trans "Added In Rejected Candidates" %}"
+                            {% else %}
+                            title="{% trans "Add To Rejected Candidates" %}"
+                            {% endif %}
+                        >
+                        {% if not cand.is_offer_rejected %}
+                        {% trans "Add to Rejected" %}
                         {% else %}
-                        title="{% trans "Add To Rejected Candidates" %}"
+                        {% trans "Edit Rejected Candidate" %}
                         {% endif %}
-                    >
-                    {% if not cand.is_offer_rejected %}
-                    {% trans "Add to Rejected" %}
-                    {% else %}
-                    {% trans "Edit Rejected Candidate" %}
+                        </a
+                        >
+                    </li>
                     {% endif %}
-                    </a
-                    >
-                </li>
                 {% endif %}
                 {% if perms.view_stagenote or request.user|is_stagemanager %}
                 <li class="oh-dropdown__item">
@@ -170,7 +174,7 @@
                 </li>
                 {% endif %}
                 <li class="oh-dropdown__item">
-                    <a style="color: inherit;text-decoration: none;" class="oh-dropdown__link oh-dropdown__link--secondary" href="/media/{{cand.resume}}" target="_blank"
+                    <a style="color: inherit;text-decoration: none;" class="oh-dropdown__link oh-dropdown__link--secondary" href="{{cand.resume.url}}" target="_blank"
                     >{% trans "Resume" %}</a>
                 </li>
                 {% if perms.recruitment.change_candidate or request.user|is_stagemanager %}
@@ -217,29 +221,31 @@
         $("#stageCount{{stage.id}}").attr("title",'{{candidates.paginator.count}} {% trans "Candidates" %}')
     </script>
     {% endfor %}
-    {% if candidates.number %}
-    <div class="oh-pagination" ondrag="event.stopPropagation();" onmousedown="event.stopPropagation()">
-        <nav class="oh-pagination__nav">
-            <ul class="oh-pagination__items">
-                {% if candidates.has_previous %}
-                <li class="oh-pagination__item oh-pagination__item--wide">
-                    <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page=1&stage_id={{candidates.0.stage_id.id}}" class="oh-pagination__link">{% trans "First" %}</a>
-                </li>
-                <li class="oh-pagination__item oh-pagination__item--wide">
-                    <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page={{ candidates.previous_page_number }}&stage_id={{candidates.0.stage_id.id}}"
-                        class="oh-pagination__link">{% trans "Previous" %}</a>
-                </li>
-                {% endif %} {% if candidates.has_next %}
-                <li class="oh-pagination__item oh-pagination__item--wide">
-                    <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page={{ candidates.next_page_number }}&stage_id={{candidates.0.stage_id.id}}"
-                        class="oh-pagination__link">{% trans "Next" %}</a>
-                </li>
-                <li class="oh-pagination__item oh-pagination__item--wide">
-                    <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page={{ candidates.paginator.num_pages }}&stage_id={{candidates.0.stage_id.id}}"
-                        class="oh-pagination__link">{% trans "Last" %}</a>
-                </li>
-                {% endif %}
-            </ul>
-        </nav>
-    </div>
+    {% if candidates.has_previous or candidates.has_next %}
+        {% if candidates.number %}
+            <div class="oh-pagination" ondrag="event.stopPropagation();" onmousedown="event.stopPropagation()">
+                <nav class="oh-pagination__nav">
+                    <ul class="oh-pagination__items">
+                        {% if candidates.has_previous %}
+                        <li class="oh-pagination__item oh-pagination__item--wide">
+                            <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page=1&stage_id={{candidates.0.stage_id.id}}" class="oh-pagination__link">{% trans "First" %}</a>
+                        </li>
+                        <li class="oh-pagination__item oh-pagination__item--wide">
+                            <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page={{ candidates.previous_page_number }}&stage_id={{candidates.0.stage_id.id}}"
+                                class="oh-pagination__link">{% trans "Previous" %}</a>
+                        </li>
+                        {% endif %} {% if candidates.has_next %}
+                        <li class="oh-pagination__item oh-pagination__item--wide">
+                            <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page={{ candidates.next_page_number }}&stage_id={{candidates.0.stage_id.id}}"
+                                class="oh-pagination__link">{% trans "Next" %}</a>
+                        </li>
+                        <li class="oh-pagination__item oh-pagination__item--wide">
+                            <a hx-target="#kanbanCandidates{{candidates.0.stage_id.id}}" hx-get="{% url 'candidate-stage-component' %}?{{pd}}&candidate_page={{ candidates.paginator.num_pages }}&stage_id={{candidates.0.stage_id.id}}"
+                                class="oh-pagination__link">{% trans "Last" %}</a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </nav>
+            </div>
+        {% endif %}
     {% endif %}

@@ -11,6 +11,12 @@ This module is part of the recruitment project and is intended to
 provide the main entry points for interacting with the application's functionality.
 """
 
+import logging
+
+from horilla.horilla_settings import HORILLA_DATE_FORMATS
+
+logger = logging.getLogger(__name__)
+
 import calendar
 import contextlib
 import io
@@ -22,10 +28,13 @@ from urllib.parse import parse_qs
 import pandas as pd
 from django.contrib import messages
 from django.core.paginator import Paginator
+from django.core.validators import validate_ipv46_address
 from django.db.models import ProtectedError
+from django.forms import ValidationError
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone as django_timezone
 from django.utils.translation import gettext as __
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
@@ -51,6 +60,19 @@ from attendance.forms import (
     AttendanceValidationConditionForm,
     GraceTimeForm,
     LateComeEarlyOutExportForm,
+    NewRequestForm,
+)
+from attendance.methods.utils import (
+    Request,
+    attendance_day_checking,
+    format_time,
+    is_reportingmanger,
+    monthly_leave_days,
+    paginator_qry,
+    parse_date,
+    parse_time,
+    sort_activity_dicts,
+    strtime_seconds,
 )
 from attendance.models import (
     Attendance,
@@ -62,81 +84,38 @@ from attendance.models import (
     AttendanceRequestFile,
     AttendanceValidationCondition,
     GraceTime,
+    WorkRecords,
 )
 from attendance.views.handle_attendance_errors import handle_attendance_errors
 from attendance.views.process_attendance_data import process_attendance_data
+from base.forms import (
+    AttendanceAllowedIPForm,
+    AttendanceAllowedIPUpdateForm,
+    TrackLateComeEarlyOutForm,
+)
 from base.methods import (
     choosesubordinates,
     closest_numbers,
     export_data,
     filtersubordinates,
     get_key_instances,
-    get_pagination,
 )
-from base.models import EmployeeShiftSchedule
+from base.models import (
+    AttendanceAllowedIP,
+    EmployeeShiftSchedule,
+    TrackLateComeEarlyOut,
+    WorkType,
+)
 from employee.filters import EmployeeFilter
 from employee.models import Employee, EmployeeWorkInformation
 from horilla.decorators import (
     hx_request_required,
+    install_required,
     login_required,
     manager_can_enter,
     permission_required,
 )
-from leave.models import WEEK_DAYS, CompanyLeave, Holiday
 from notifications.signals import notify
-from payroll.models.models import WorkRecord
-
-# Create your views here.
-
-
-def intersection_list(list1, list2):
-    """
-    This method is used to intersect two list
-    """
-    return [value for value in list1 if value in list2]
-
-
-def format_time(seconds):
-    """
-    this method is used to formate seconds to H:M and return it
-    args:
-        seconds : seconds
-    """
-
-    hour = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = int((seconds % 3600) % 60)
-    return f"{hour:02d}:{minutes:02d}"
-
-
-def strtime_seconds(time):
-    """
-    this method is used reconvert time in H:M formate string back to seconds and return it
-    args:
-        time : time in H:M format
-    """
-
-    ftr = [3600, 60, 1]
-    return sum(a * b for a, b in zip(ftr, map(int, time.split(":"))))
-
-
-def is_reportingmanger(request, instance):
-    """
-    if the instance have employee id field then you can use this method to know the
-    request user employee is the reporting manager of the instance
-    args :
-        request : request
-        instance : an object or instance of any model contain employee_id foreign key field
-    """
-
-    manager = request.user.employee_get
-    try:
-        employee_workinfo_manager = (
-            instance.employee_id.employee_work_info.reporting_manager_id
-        )
-    except Exception:
-        return HttpResponse("This Employee Dont Have any work information")
-    return manager == employee_workinfo_manager
 
 
 def attendance_validate(attendance):
@@ -156,60 +135,66 @@ def attendance_validate(attendance):
     return condition_for_at_work >= at_work
 
 
-def attendance_day_checking(attendance_date, minimum_hour):
-    # Convert the string to a datetime object
-    attendance_datetime = datetime.strptime(attendance_date, "%Y-%m-%d")
+@login_required
+@hx_request_required
+def profile_attendance_tab(request):
+    """
+    This function is used to view attendance tab of an employee in profile view.
 
-    # Extract name of the day
-    attendance_day = attendance_datetime.strftime("%A")
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    emp_id (int): The id of the employee.
 
-    # Taking all holidays into a list
-    leaves = []
-    holidays = Holiday.objects.all()
-    for holi in holidays:
-        start_date = holi.start_date
-        end_date = holi.end_date
+    Returns: return asset-request-tab template
 
-        # Convert start_date and end_date to datetime objects
-        start_date = datetime.strptime(str(start_date), "%Y-%m-%d")
-        end_date = datetime.strptime(str(end_date), "%Y-%m-%d")
+    """
+    user = request.user
+    employee = user.employee_get
+    employee_attendances = employee.employee_attendances.all()
+    attendances_ids = json.dumps([instance.id for instance in employee_attendances])
+    context = {
+        "attendances": employee_attendances,
+        "attendances_ids": attendances_ids,
+    }
+    return render(request, "tabs/profile-attendance-tab.html", context)
 
-        # Add dates in between start date and end date including both
-        current_date = start_date
-        while current_date <= end_date:
-            leaves.append(current_date.strftime("%Y-%m-%d"))
-            current_date += timedelta(days=1)
 
-    # Checking attendance date is in holiday list, if found making the minimum hour to 00:00
-    for leave in leaves:
-        if str(leave) == str(attendance_date):
-            minimum_hour = "00:00"
-            break
+@login_required
+@manager_can_enter("employee.view_employee")
+def attendance_tab(request, emp_id):
+    """
+    This function is used to view attendance tab of an employee in individual view.
 
-    # Making a dictonary contains week day value and leave day pairs
-    company_leaves = {}
-    company_leave = CompanyLeave.objects.all()
-    for com_leave in company_leave:
-        a = dict(WEEK_DAYS).get(com_leave.based_on_week_day)
-        b = com_leave.based_on_week
-        company_leaves[b] = a
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    emp_id (int): The id of the employee.
 
-    # Checking the attendance date is in which week
-    week_in_month = str(((attendance_datetime.day - 1) // 7 + 1) - 1)
+    Returns: return attendance-tab template
+    """
 
-    # Checking the attendance date is in the company leave or not
-    for pairs in company_leaves.items():
-        # For all weeks based_on_week is None
-        if str(pairs[0]) == "None":
-            if str(pairs[1]) == str(attendance_day):
-                minimum_hour = "00:00"
-                break
-        # Checking with based_on_week and attendance_date week
-        if str(pairs[0]) == week_in_month:
-            if str(pairs[1]) == str(attendance_day):
-                minimum_hour = "00:00"
-                break
-    return minimum_hour
+    requests = Attendance.objects.filter(
+        is_validate_request=True,
+        employee_id=emp_id,
+    )
+    attendances_ids = json.dumps([instance.id for instance in requests])
+    validate_attendances = Attendance.objects.filter(
+        attendance_validated=False, employee_id=emp_id
+    )
+    validate_attendances_ids = json.dumps(
+        [instance.id for instance in validate_attendances]
+    )
+    accounts = AttendanceOverTime.objects.filter(employee_id=emp_id)
+    accounts_ids = json.dumps([instance.id for instance in accounts])
+
+    context = {
+        "requests": requests,
+        "attendances_ids": attendances_ids,
+        "accounts": accounts,
+        "accounts_ids": accounts_ids,
+        "validate_attendances": validate_attendances,
+        "validate_attendances_ids": validate_attendances_ids,
+    }
+    return render(request, "tabs/attendance-tab.html", context=context)
 
 
 @login_required
@@ -236,22 +221,8 @@ def attendance_create(request):
     return render(request, "attendance/attendance/form.html", {"form": form})
 
 
-def get_record_per_page():
-    """
-    This method will return the record per page count
-    """
-    return 50
-
-
-def paginator_qry(qryset, page_number):
-    """
-    This method is used to paginate queryset
-    """
-    paginator = Paginator(qryset, get_pagination())
-    qryset = paginator.get_page(page_number)
-    return qryset
-
-
+@login_required
+@permission_required("attendance.add_attendance")
 def attendance_excel(_request):
     """
     Generate an empty Excel template for attendance data with predefined columns.
@@ -645,8 +616,6 @@ def attendance_overtime_view(request):
     accounts = accounts.distinct()
     form = AttendanceOverTimeForm()
     form = choosesubordinates(request, form, "attendance.add_attendanceovertime")
-    export_obj = AttendanceOverTimeFilter()
-    export_fields = AttendanceOverTimeExportForm()
     data_dict = parse_qs(previous_data)
     get_key_instances(AttendanceOverTime, data_dict)
     return render(
@@ -657,8 +626,6 @@ def attendance_overtime_view(request):
             "form": form,
             "pd": previous_data,
             "f": filter_obj,
-            "export_obj": export_obj,
-            "export_fields": export_fields,
             "gp_fields": AttendanceOvertimeReGroup.fields,
             "filter_dict": data_dict,
         },
@@ -666,6 +633,17 @@ def attendance_overtime_view(request):
 
 
 def attendance_account_export(request):
+    if request.META.get("HTTP_HX_REQUEST") == "true":
+        context = {
+            "export_obj": AttendanceOverTimeFilter(),
+            "export_fields": AttendanceOverTimeExportForm(),
+        }
+
+        return render(
+            request,
+            "attendance/attendance_account/attendance_account_export_filter.html",
+            context=context,
+        )
     return export_data(
         request=request,
         model=AttendanceOverTime,
@@ -786,7 +764,6 @@ def attendance_activity_view(request):
     activity_ids = json.dumps(
         [instance.id for instance in paginator_qry(attendance_activities, None)]
     )
-    export_form = AttendanceActivityExportForm()
     if attendance_activities.exists():
         template = "attendance/attendance_activity/attendance_activity_view.html"
     else:
@@ -798,11 +775,7 @@ def attendance_activity_view(request):
             "data": paginator_qry(attendance_activities, request.GET.get("page")),
             "pd": previous_data,
             "f": filter_obj,
-            "export": AttendanceActivityFilter(
-                queryset=AttendanceActivity.objects.all()
-            ),
             "gp_fields": AttendanceActivityReGroup.fields,
-            "export_form": export_form,
             "activity_ids": activity_ids,
         },
     )
@@ -895,9 +868,121 @@ def attendance_activity_bulk_delete(request):
     return JsonResponse({"message": "Success"})
 
 
+def process_activity_dicts(activity_dicts):
+    from attendance.views.clock_in_out import clock_in, clock_out
+
+    if not activity_dicts:
+        return
+    sorted_activity_dicts = sort_activity_dicts(activity_dicts)
+    for activity in sorted_activity_dicts:
+        badge_id = activity.get("Badge ID")
+        if not badge_id:
+            activity["Error 1"] = "Please add the Badge ID column in the Excel sheet."
+            continue
+
+        employee = Employee.objects.filter(badge_id=badge_id).first()
+        if not employee:
+            activity["Error 2"] = "Invalid Badge ID"
+            continue
+
+        check_in_date = parse_date(activity["In Date"], "Error 4", activity)
+        check_out_date = parse_date(activity["Out Date"], "Error 5", activity)
+        check_in_time = (
+            parse_time(activity["Check In"])
+            if not pd.isna(activity["Check In"])
+            else None
+        )
+        check_out_time = (
+            parse_time(activity["Check Out"])
+            if not pd.isna(activity["Check Out"])
+            else None
+        )
+        if not any(key.startswith("Error") for key in activity.keys()):
+            if check_in_time:
+                try:
+                    clock_in(
+                        Request(
+                            user=employee.employee_user_id,
+                            date=check_in_date,
+                            time=check_in_time,
+                            datetime=django_timezone.make_aware(
+                                datetime.combine(check_in_date, check_in_time)
+                            ),
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"Got an error in import clock in {e}")
+
+            if check_out_time and check_out_date:
+                try:
+                    clock_out(
+                        Request(
+                            user=employee.employee_user_id,
+                            date=check_out_date,
+                            time=check_out_time,
+                            datetime=django_timezone.make_aware(
+                                datetime.combine(check_out_date, check_out_time)
+                            ),
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"Got an error in import clock out {e}")
+    return activity_dicts
+
+
+@login_required
+@permission_required("attendance.add_attendanceactivity")
+def attendance_activity_import(request):
+    if request.method == "POST":
+        file = request.FILES["activity_import"]
+        data_frame = pd.read_excel(file)
+        activity_dicts = data_frame.to_dict("records")
+        if activity_dicts:
+            activity_dicts = process_activity_dicts(activity_dicts)
+            messages.success(request, _("Attendance activity imported successfully"))
+            return redirect(attendance_activity_view)
+    return render(request, "attendance/attendance_activity/import_activity.html")
+
+
+@login_required
+@permission_required("attendance.add_attendanceactivity")
+def attendance_activity_import_excel(request):
+    if request.method == "GET":
+        data_frame = pd.DataFrame(
+            columns=[
+                "Badge ID",
+                "Employee",
+                "Attendance Date",
+                "In Date",
+                "Check In",
+                "Check Out",
+                "Out Date",
+            ]
+        )
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = 'attachment; filename="activity_excel.xlsx"'
+        data_frame.to_excel(response, index=False)
+        return response
+
+
 @login_required
 @permission_required("attendance.change_attendanceactivity")
 def attendance_activity_export(request):
+    if request.META.get("HTTP_HX_REQUEST") == "true":
+        export_form = AttendanceActivityExportForm()
+        context = {
+            "export_form": export_form,
+            "export": AttendanceActivityFilter(
+                queryset=AttendanceActivity.objects.all()
+            ),
+        }
+        return render(
+            request,
+            "attendance/attendance_activity/export_filter.html",
+            context=context,
+        )
     return export_data(
         request=request,
         model=AttendanceActivity,
@@ -905,80 +990,6 @@ def attendance_activity_export(request):
         form_class=AttendanceActivityExportForm,
         file_name="Attendance_activity",
     )
-
-
-def employee_exists(request):
-    """
-    This method return the employee instance and work info if not exists return None instead
-    """
-    employee, employee_work_info = None, None
-    try:
-        employee = request.user.employee_get
-        employee_work_info = employee.employee_work_info
-    finally:
-        return (employee, employee_work_info)
-
-
-def shift_schedule_today(day, shift):
-    """
-    This function is used to find shift schedules for the day,
-    it will returns min hour,start time seconds  end time seconds
-    args:
-        shift   : shift instance
-        day     : shift day object
-    """
-    schedule_today = day.day_schedule.filter(shift_id=shift)
-    start_time_sec, end_time_sec, minimum_hour = 0, 0, "00:00"
-    if schedule_today.exists():
-        schedule_today = schedule_today[0]
-        minimum_hour = schedule_today.minimum_working_hour
-        start_time_sec = strtime_seconds(schedule_today.start_time.strftime("%H:%M"))
-        end_time_sec = strtime_seconds(schedule_today.end_time.strftime("%H:%M"))
-    return (minimum_hour, start_time_sec, end_time_sec)
-
-
-def overtime_calculation(attendance):
-    """
-    This method is used to calculate overtime of the attendance, it will
-    return difference between attendance worked hour and minimum hour if
-    and only worked hour greater than minimum hour, else return 00:00
-    args:
-        attendance : attendance instance
-    """
-
-    minimum_hour = attendance.minimum_hour
-    at_work = attendance.attendance_worked_hour
-    at_work_sec = strtime_seconds(at_work)
-    minimum_hour_sec = strtime_seconds(minimum_hour)
-    if at_work_sec > minimum_hour_sec:
-        return format_time((at_work_sec - minimum_hour_sec))
-    return "00:00"
-
-
-def activity_datetime(attendance_activity):
-    """
-    This method is used to convert clock-in and clock-out of activity as datetime object
-    args:
-        attendance_activity : attendance activity instance
-    """
-
-    # in
-    in_year = attendance_activity.clock_in_date.year
-    in_month = attendance_activity.clock_in_date.month
-    in_day = attendance_activity.clock_in_date.day
-    in_hour = attendance_activity.clock_in.hour
-    in_minute = attendance_activity.clock_in.minute
-    in_seconds = attendance_activity.clock_in.second
-    # out
-    out_year = attendance_activity.clock_out_date.year
-    out_month = attendance_activity.clock_out_date.month
-    out_day = attendance_activity.clock_out_date.day
-    out_hour = attendance_activity.clock_out.hour
-    out_minute = attendance_activity.clock_out.minute
-    out_seconds = attendance_activity.clock_out.second
-    return datetime(
-        in_year, in_month, in_day, in_hour, in_minute, in_seconds
-    ), datetime(out_year, out_month, out_day, out_hour, out_minute, out_seconds)
 
 
 @login_required
@@ -1002,6 +1013,7 @@ def on_time_view(request):
 
 
 @login_required
+@install_required
 def late_come_early_out_view(request):
     """
     This method render template to view all late come early out entries
@@ -1022,7 +1034,6 @@ def late_come_early_out_view(request):
         [instance.id for instance in paginator_qry(reports, None)]
     )
     previous_data = request.GET.urlencode()
-    export_form = LateComeEarlyOutExportForm()
     data_dict = parse_qs(previous_data)
     get_key_instances(AttendanceLateComeEarlyOut, data_dict)
     return render(
@@ -1032,16 +1043,14 @@ def late_come_early_out_view(request):
             "data": paginator_qry(reports, request.GET.get("page")),
             "f": filter_obj,
             "gp_fields": LateComeEarlyOutReGroup.fields,
-            "export": LateComeEarlyOutFilter(
-                queryset=AttendanceLateComeEarlyOut.objects.all()
-            ),
             "filter_dict": data_dict,
-            "export_form": export_form,
             "late_in_early_out_ids": late_in_early_out_ids,
         },
     )
 
 
+@login_required
+@hx_request_required
 def late_in_early_out_single_view(request, obj_id):
     request_copy = request.GET.copy()
     request_copy.pop("instances_ids", None)
@@ -1064,6 +1073,7 @@ def late_in_early_out_single_view(request, obj_id):
 
 @login_required
 @permission_required("attendance.delete_attendancelatecomeearlyout")
+@hx_request_required
 @require_http_methods(["POST"])
 def late_come_early_out_delete(request, obj_id):
     """
@@ -1128,6 +1138,19 @@ def late_come_early_out_export(request):
     This view function takes a GET request and exports attendance late come early out data into an Excel file.
     The exported Excel file will include the selected fields from the AttendanceLateComeEarlyOut model.
     """
+    if request.META.get("HTTP_HX_REQUEST") == "true":
+        context = {
+            "export": LateComeEarlyOutFilter(
+                queryset=AttendanceLateComeEarlyOut.objects.all()
+            ),
+            "export_form": LateComeEarlyOutExportForm(),
+        }
+
+        return render(
+            request,
+            "attendance/late_come_early_out/export_filter.html",
+            context=context,
+        )
     return export_data(
         request=request,
         model=AttendanceLateComeEarlyOut,
@@ -1386,62 +1409,90 @@ def approve_bulk_overtime(request):
     return JsonResponse({"message": "Success"})
 
 
-def form_shift_dynamic_data(request):
-    """
-    This method is used to update the shift details to the form
-    """
-    work_type = None
-    if "employee_id" in request.POST and request.POST["employee_id"]:
-        shift_id = request.POST["shift_id"]
-    # Check if 'employee_id' is present in POST request and not empty
-    if "employee_id" in request.POST and request.POST["employee_id"]:
-        employee_id = request.POST["employee_id"]
-        try:
-            employee = Employee.objects.get(id=employee_id)
-            # Use getattr to get the work type
-            work_type = employee.get_work_type()
-            if work_type:
-                work_type = work_type.id
-        except Employee.DoesNotExist:
-            pass
-    attendance_date_str = request.POST.get("attendance_date")
-    today = datetime.now()
-    attendance_date = date(day=today.day, month=today.month, year=today.year)
-    if attendance_date_str is not None and attendance_date_str != "":
-        attendance_date = datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
+@login_required
+@hx_request_required
+def update_fields_based_shift(request):
+    shift_id = request.GET.get("shift_id")
+    hx_target = request.META.get("HTTP_HX_TARGET")
+
+    employee_ids = (
+        request.GET.get("employee_id")
+        if hx_target == "attendanceUpdateForm" or hx_target == "attendanceRequestDiv"
+        else request.GET.getlist("employee_id")
+    )
+    employee_queryset = (
+        (
+            Employee.objects.get(id=employee_ids)
+            if hx_target == "attendanceUpdateForm"
+            or hx_target == "attendanceRequestDiv"
+            else Employee.objects.filter(id__in=employee_ids)
+        )
+        if employee_ids
+        else None
+    )
+    attendance_date_str = request.GET.get("attendance_date")
+
+    attendance_date = (
+        datetime.strptime(attendance_date_str, "%Y-%m-%d").date()
+        if attendance_date_str
+        else datetime.today().date()
+    )
     day = attendance_date.strftime("%A").lower()
-    schedule_today = None
-    if shift_id:
-        schedule_today = EmployeeShiftSchedule.objects.filter(
-            shift_id__id=shift_id, day__day=day
-        ).first()
-    shift_start_time = ""
-    shift_end_time = ""
-    minimum_hour = "00:00"
-    attendance_clock_out_date = attendance_date
-    if schedule_today is not None:
-        shift_start_time = schedule_today.start_time
-        shift_end_time = schedule_today.end_time
-        minimum_hour = schedule_today.minimum_working_hour
-        if shift_end_time < shift_start_time:
-            attendance_clock_out_date = attendance_date + timedelta(days=1)
-    worked_hour = minimum_hour
-    if attendance_date == date(day=today.day, month=today.month, year=today.year):
-        shift_end_time = datetime.now().strftime("%H:%M")
+
+    schedule_today = (
+        EmployeeShiftSchedule.objects.filter(shift_id=shift_id, day__day=day).first()
+        if shift_id
+        else None
+    )
+
+    shift_start_time = schedule_today.start_time if schedule_today else ""
+    shift_end_time = schedule_today.end_time if schedule_today else ""
+    minimum_hour = schedule_today.minimum_working_hour if schedule_today else "00:00"
+
+    if schedule_today and shift_end_time < shift_start_time:
+        attendance_clock_out_date = (attendance_date + timedelta(days=1)).strftime(
+            "%Y-%m-%d"
+        )
+    else:
+        attendance_clock_out_date = attendance_date.strftime("%Y-%m-%d")
+
+    if attendance_date == datetime.today().date():
+        shift_end_time = datetime.now().time()
         worked_hour = "00:00"
+    else:
+        worked_hour = minimum_hour
 
     minimum_hour = attendance_day_checking(str(attendance_date), minimum_hour)
 
-    return JsonResponse(
-        {
-            "shift_start_time": shift_start_time,
-            "shift_end_time": shift_end_time,
-            "checkin_date": attendance_date.strftime("%Y-%m-%d"),
-            "minimum_hour": minimum_hour,
-            "worked_hour": worked_hour,
-            "checkout_date": attendance_clock_out_date.strftime("%Y-%m-%d"),
-            "work_type": str(work_type),
-        }
+    initial_data = {
+        "work_type_id": WorkType.find(request.GET.get("work_type_id")),
+        "shift_id": shift_id,
+        "employee_id": employee_queryset,
+        "minimum_hour": minimum_hour,
+        "attendance_date": attendance_date.strftime("%Y-%m-%d"),
+        "attendance_clock_in": (
+            shift_start_time.strftime("%H:%M") if shift_start_time else ""
+        ),
+        "attendance_clock_out": (
+            shift_end_time.strftime("%H:%M") if shift_end_time else ""
+        ),
+        "attendance_worked_hour": worked_hour,
+        "attendance_clock_in_date": attendance_date.strftime("%Y-%m-%d"),
+        "attendance_clock_out_date": attendance_clock_out_date,
+    }
+    form = (
+        AttendanceUpdateForm(initial=initial_data)
+        if hx_target == "attendanceUpdateForm"
+        else (
+            NewRequestForm(initial=initial_data)
+            if hx_target == "attendanceRequestDiv"
+            else AttendanceForm(initial=initial_data)
+        )
+    )
+    return render(
+        request,
+        "attendance/attendance/update_hx_form.html",
+        {"request": request, "form": form},
     )
 
 
@@ -1759,39 +1810,41 @@ def delete_grace_time(request, grace_id):
         messages.error(request, _("Grace Time Does not exists.."))
     except ProtectedError:
         messages.error(request, _("Related datas exists."))
-    if request.GET.get("view") == "shift":
-        return redirect("/settings/grace-settings-view")
-    else:
-        return redirect("/settings/grace-settings-view")
+    context = {
+        "condition": AttendanceValidationCondition.objects.first(),
+        "default_grace_time": GraceTime.objects.filter(is_default=True).first(),
+        "grace_times": GraceTime.objects.all().exclude(is_default=True),
+    }
+
+    return render(request, "attendance/grace_time/grace_time_table.html", context)
 
 
 @login_required
 @permission_required("attendance.update_gracetime")
-def update_isactive_gracetime(request):
+def update_isactive_gracetime(request, obj_id):
     """
     ajax function to update is active field in grace time.
     Args:
-    - isChecked: Boolean value representing the state of grace time,
-    - graceId: Id of grace time object
+    - is_active: Boolean value representing the state of grace time,
+    - obj_id: Id of grace time object
     """
-    isChecked = request.POST.get("isChecked")
-    graceId = request.POST.get("graceId")
-    grace_time = GraceTime.objects.get(id=graceId)
-    if isChecked == "true":
+    is_active = request.POST.get("is_active")
+    grace_time = GraceTime.objects.get(id=obj_id)
+    if is_active == "on":
         grace_time.is_active = True
-
-        response = {
-            "type": "success",
-            "message": _("Default grace time activated successfully."),
-        }
+        messages.success(request, _("Grace time activated successfully."))
     else:
         grace_time.is_active = False
-        response = {
-            "type": "success",
-            "message": _("Default grace time deactivated successfully."),
-        }
+        messages.success(request, _("Grace time deactivated successfully."))
     grace_time.save()
-    return JsonResponse(response)
+
+    context = {
+        "condition": AttendanceValidationCondition.objects.first(),
+        "default_grace_time": GraceTime.objects.filter(is_default=True).first(),
+        "grace_times": GraceTime.objects.all().exclude(is_default=True),
+    }
+
+    return render(request, "attendance/grace_time/grace_time_table.html", context)
 
 
 @login_required
@@ -1979,45 +2032,6 @@ def delete_comment_file(request):
     )
 
 
-def monthly_leave_days(month, year):
-    leave_dates = []
-    holidays = Holiday.objects.filter(start_date__month=month, start_date__year=year)
-    leave_dates += list(holidays.values_list("start_date", flat=True))
-
-    company_leaves = CompanyLeave.objects.all()
-    for company_leave in company_leaves:
-        year = year
-        month = month
-        based_on_week = company_leave.based_on_week
-        based_on_week_day = company_leave.based_on_week_day
-        if based_on_week != None:
-            calendar.setfirstweekday(6)
-            month_calendar = calendar.monthcalendar(year, month)
-            weeks = month_calendar[int(based_on_week)]
-            weekdays_in_weeks = [day for day in weeks if day != 0]
-            for day in weekdays_in_weeks:
-                date_name = datetime.strptime(
-                    f"{year}-{month:02}-{day:02}", "%Y-%m-%d"
-                ).date()
-                if (
-                    date_name.weekday() == int(based_on_week_day)
-                    and date_name not in leave_dates
-                ):
-                    leave_dates.append(date_name)
-        else:
-            calendar.setfirstweekday(0)
-            month_calendar = calendar.monthcalendar(year, month)
-            for week in month_calendar:
-                if week[int(based_on_week_day)] != 0:
-                    date_name = datetime.strptime(
-                        f"{year}-{month:02}-{week[int(based_on_week_day)]:02}",
-                        "%Y-%m-%d",
-                    ).date()
-                    if date_name not in leave_dates:
-                        leave_dates.append(date_name)
-    return leave_dates
-
-
 @login_required
 def work_records(request):
     today = date.today()
@@ -2056,7 +2070,7 @@ def work_records_change_month(request):
     days = [day for week in month_matrix for day in week if day != 0]
     current_month_date_list = [datetime(year, month, day).date() for day in days]
 
-    all_work_records = WorkRecord.objects.filter(
+    all_work_records = WorkRecords.objects.filter(
         date__in=current_month_date_list
     ).select_related("employee_id")
 
@@ -2111,11 +2125,18 @@ def work_records_change_month(request):
 
 
 @login_required
-@permission_required("leave.add_leaverequest")
+@permission_required("attendance.view_workrecords")
 def work_record_export(request):
-    month = int(request.GET.get("month", date.today().month))
-    year = int(request.GET.get("year", date.today().year))
-    records = WorkRecord.objects.filter(date__month=month, date__year=year)
+    month = (
+        int(request.GET.get("month"))
+        if request.GET.get("month")
+        else date.today().month
+    )
+    year = (
+        int(request.GET.get("year")) if request.GET.get("year") else date.today().year
+    )
+    employees = EmployeeFilter(request.GET).qs
+    records = WorkRecords.objects.filter(date__month=month, date__year=year)
     num_days = calendar.monthrange(year, month)[1]
     all_date_objects = [date(year, month, day) for day in range(1, num_days + 1)]
     leave_dates = monthly_leave_days(month, year)
@@ -2134,24 +2155,9 @@ def work_record_export(request):
     else:
         date_format = "DD-MM-YYYY"
 
-    # Define date formats
-    date_formats = {
-        "DD-MM-YYYY": "%d-%m-%Y",
-        "DD.MM.YYYY": "%d.%m.%Y",
-        "DD/MM/YYYY": "%d/%m/%Y",
-        "MM/DD/YYYY": "%m/%d/%Y",
-        "YYYY-MM-DD": "%Y-%m-%d",
-        "YYYY/MM/DD": "%Y/%m/%d",
-        "MMMM D, YYYY": "%B %d, %Y",
-        "DD MMMM, YYYY": "%d %B, %Y",
-        "MMM. D, YYYY": "%b. %d, %Y",
-        "D MMM. YYYY": "%d %b. %Y",
-        "dddd, MMMM D, YYYY": "%A, %B %d, %Y",
-    }
+    format_string = HORILLA_DATE_FORMATS.get(date_format)
 
-    format_string = date_formats[date_format]
-
-    for employee in Employee.objects.all():
+    for employee in employees:
         row_data = {"Employee": employee}
         for date_item in all_date_objects:
             for record in records:
@@ -2236,3 +2242,290 @@ def enable_timerunner(request):
     time_runner.time_runner = "time_runner" in request.GET.keys()
     time_runner.save()
     return HttpResponse("success")
+
+
+@login_required
+@permission_required("attendance.view_attendancevalidationcondition")
+def validation_condition_view(request):
+    """
+    This method view attendance validation conditions.
+    """
+
+    condition = AttendanceValidationCondition.objects.first()
+    default_grace_time = GraceTime.objects.filter(is_default=True).first()
+    return render(
+        request,
+        "attendance/break_point/condition.html",
+        {"condition": condition, "default_grace_time": default_grace_time},
+    )
+
+
+@login_required
+@permission_required("base.view_tracklatecomeearlyout")
+def track_late_come_early_out(request):
+    """
+    Renders the form to track late arrivals and early departures in attendance.
+    """
+    tracking = TrackLateComeEarlyOut.objects.first()
+    form = TrackLateComeEarlyOutForm(
+        initial={"is_enable": tracking.is_enable} if tracking else {}
+    )
+    return render(
+        request, "attendance/late_come_early_out/tracking.html", {"form": form}
+    )
+
+
+@login_required
+@permission_required("base.change_tracklatecomeearlyout")
+def enable_disable_tracking_late_come_early_out(request):
+    """
+    Enables or disables the tracking of late arrivals and early departures in attendance.
+    """
+    if request.method == "POST":
+        enable = bool(request.POST.get("is_enable"))
+        tracking, created = TrackLateComeEarlyOut.objects.get_or_create()
+        tracking.is_enable = enable
+        tracking.save()
+        message = _("enabled") if enable else _("disabled")
+        messages.success(
+            request, _("Tracking late come early out {} successfully").format(message)
+        )
+    return HttpResponse("<script>window.location.reload()</script>")
+
+
+@login_required
+@permission_required("attendance.view_attendancevalidationcondition")
+def grace_time_view(request):
+    """
+    This method view attendance validation conditions.
+    """
+    condition = AttendanceValidationCondition.objects.first()
+    default_grace_time = GraceTime.objects.filter(is_default=True).first()
+    grace_times = GraceTime.objects.all().exclude(is_default=True)
+    return render(
+        request,
+        "attendance/grace_time/grace_time.html",
+        {
+            "condition": condition,
+            "default_grace_time": default_grace_time,
+            "grace_times": grace_times,
+        },
+    )
+
+
+@login_required
+@permission_required("attendance.add_attendancevalidationcondition")
+def validation_condition_create(request):
+    """
+    This method render a form to create attendance validation conditions,
+    and create if the form is valid.
+    """
+    form = AttendanceValidationConditionForm()
+    if request.method == "POST":
+        form = AttendanceValidationConditionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, _("Attendance Break-point settings created."))
+            return HttpResponse("<script>window.location.reload()</script>")
+    return render(
+        request,
+        "attendance/break_point/condition_form.html",
+        {"form": form},
+    )
+
+
+@login_required
+@hx_request_required
+@permission_required("attendance.change_attendancevalidationcondition")
+def validation_condition_update(request, obj_id):
+    """
+    This method is used to update validation condition
+    Args:
+        obj_id : validation condition instance id
+    """
+    condition = AttendanceValidationCondition.objects.get(id=obj_id)
+    form = AttendanceValidationConditionForm(instance=condition)
+    if request.method == "POST":
+        form = AttendanceValidationConditionForm(request.POST, instance=condition)
+        if form.is_valid():
+            form.save()
+            messages.success(request, _("Attendance Break-point settings updated."))
+            return HttpResponse("<script>window.location.reload()</script>")
+    return render(
+        request,
+        "attendance/break_point/condition_form.html",
+        {"form": form, "condition": condition},
+    )
+
+
+@login_required
+@permission_required("attendance.add_attendance")
+def allowed_ips(request):
+    """
+    This function is used to view the allowed ips
+    """
+    allowed_ips = AttendanceAllowedIP.objects.first()
+    return render(
+        request,
+        "attendance/ip_restriction/ip_restriction.html",
+        {"allowed_ips": allowed_ips},
+    )
+
+
+@login_required
+@permission_required("attendance.add_attendance")
+def enable_ip_restriction(request):
+    """
+    This function is used to enable the allowed ips
+    """
+    form = AttendanceAllowedIPForm()
+    if request.method == "POST":
+        ip_restiction = AttendanceAllowedIP.objects.first()
+
+        if not ip_restiction:
+            ip_restiction = AttendanceAllowedIP.objects.create(is_enabled=True)
+            return HttpResponse("<script>window.location.reload()</script>")
+
+        if not ip_restiction.is_enabled:
+            ip_restiction.is_enabled = True
+        elif ip_restiction.is_enabled:
+            ip_restiction.is_enabled = False
+
+        ip_restiction.save()
+        return HttpResponse("<script>window.location.reload()</script>")
+
+
+def validate_ip_address(self, value):
+    """
+    This function is used to check if the provided IP is in the ipv4 or ipv6 format.
+
+    Args:
+        value: The IP address to validate
+    """
+    try:
+        validate_ipv46_address(value)
+    except ValidationError:
+        raise ValidationError("Enter a valid IPv4 or IPv6 address.")
+    return value
+
+
+@login_required
+@permission_required("attendance.add_attendance")
+def create_allowed_ips(request):
+    """
+    This function is used to create the allowed IPs.
+    """
+    if request.method == "POST":
+        form = AttendanceAllowedIPForm(request.POST)
+        if form.is_valid():
+            ip_addresses = form.cleaned_data.get("ip_addresses")
+            allowed_ips = AttendanceAllowedIP.objects.first()
+            if allowed_ips:
+                existing_ips = set(allowed_ips.additional_data.get("allowed_ips", []))
+                new_ips = set(ip_addresses)
+                duplicates = new_ips.intersection(existing_ips)
+
+                if duplicates:
+                    messages.error(
+                        request, f"IP addresses already exist: {', '.join(duplicates)}"
+                    )
+
+                non_duplicates = new_ips - duplicates
+
+                if non_duplicates:
+                    allowed_ips.additional_data["allowed_ips"] = list(
+                        existing_ips.union(non_duplicates)
+                    )
+                    allowed_ips.save()
+                    messages.success(request, "IP addresses saved successfully")
+                else:
+                    messages.info(
+                        request,
+                        "All provided IP addresses are already in the allowed list.",
+                    )
+
+            else:
+                AttendanceAllowedIP.objects.create(
+                    is_enabled=True, additional_data={"allowed_ips": ip_addresses}
+                )
+                messages.success(request, "IP addresses saved successfully")
+
+            return HttpResponse("<script>window.location.reload()</script>")
+    else:
+        form = AttendanceAllowedIPForm()
+
+    return render(
+        request, "attendance/ip_restriction/restrict_form.html", {"form": form}
+    )
+
+
+@login_required
+@permission_required("attendance.delete_attendance")
+def delete_allowed_ips(request):
+    """
+    This function is used to delete the allowed ips
+    """
+    try:
+        ids = request.GET.getlist("id")
+        allowed_ips = AttendanceAllowedIP.objects.first()
+        ips = allowed_ips.additional_data["allowed_ips"]
+        for id in ids:
+            ips.pop(eval(id))
+
+        allowed_ips.additional_data["allowed_ips"] = ips
+        allowed_ips.save()
+
+        messages.success(request, "IP address removed successfully")
+    except:
+        messages.error(request, "Invalid id")
+    return redirect("allowed-ips")
+
+
+@login_required
+@permission_required("attendance.change_attendance")
+def edit_allowed_ips(request):
+    """
+    This function is used to edit the allowed IPs.
+    """
+    allowed_ips = AttendanceAllowedIP.objects.first()
+    if not allowed_ips:
+        messages.error(request, "No allowed IPs found.")
+        return redirect("allowed-ips")
+
+    ips = allowed_ips.additional_data.get("allowed_ips", [])
+    id = request.GET.get("id")
+
+    try:
+        id = int(id)
+        if id < 0 or id >= len(ips):
+            raise IndexError
+
+        initial_ip = ips[id]
+        form = AttendanceAllowedIPForm(initial={"ip_addresses": initial_ip})
+
+        if request.method == "POST":
+            form = AttendanceAllowedIPForm(request.POST)
+            if form.is_valid():
+                new_ip = form.cleaned_data["ip_addresses"][0]
+
+                existing_ips = set(allowed_ips.additional_data.get("allowed_ips", []))
+
+                if new_ip in existing_ips:
+                    messages.error(request, "IP address already exists.")
+                else:
+                    existing_ips.discard(initial_ip)
+                    existing_ips.add(new_ip)
+
+                    allowed_ips.additional_data["allowed_ips"] = list(existing_ips)
+                    allowed_ips.save()
+                    messages.success(request, "IP address updated successfully")
+                return HttpResponse("<script>window.location.reload()</script>")
+
+    except (ValueError, IndexError):
+        messages.error(request, "Invalid ID provided.")
+
+    return render(
+        request,
+        "attendance/ip_restriction/restrict_form.html",
+        {"form": form, "id": id},
+    )

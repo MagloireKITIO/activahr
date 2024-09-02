@@ -9,7 +9,9 @@ import uuid
 from typing import Any
 
 from django import forms
+from django.apps import apps
 from django.template.loader import render_to_string
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 import payroll.models.models
@@ -18,10 +20,10 @@ from base.methods import reload_queryset
 from employee.filters import EmployeeFilter
 from employee.models import BonusPoint, Employee
 from horilla import horilla_middlewares
+from horilla.methods import get_horilla_model_class
 from horilla_widgets.forms import HorillaForm
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
-from leave.models import AvailableLeave, LeaveType
 from notifications.signals import notify
 from payroll.models import tax_models as models
 from payroll.models.models import (
@@ -72,6 +74,18 @@ class AllowanceForm(forms.ModelForm):
                 }
             kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
+
+        self.fields["specific_employees"] = HorillaMultiSelectField(
+            queryset=Employee.objects.all(),
+            widget=HorillaMultiSelectWidget(
+                filter_route_name="employee-widget-filter",
+                filter_class=EmployeeFilter,
+                filter_instance_contex_name="f",
+                filter_template_path="employee_filters.html",
+                instance=self.instance,
+            ),
+            label="Specific Employees",
+        )
         self.fields["if_condition"].widget.attrs.update(
             {
                 "onchange": "rangeToggle($(this))",
@@ -90,6 +104,26 @@ class AllowanceForm(forms.ModelForm):
 
     def clean(self, *args, **kwargs):
         cleaned_data = super().clean(*args, **kwargs)
+
+        specific_employees = self.data.getlist("specific_employees")
+        include_all = self.data.get("include_active_employees")
+        condition_based = self.data.get("is_condition_based")
+
+        for field_name, field_instance in self.fields.items():
+            if isinstance(field_instance, HorillaMultiSelectField):
+                self.errors.pop(field_name, None)
+                if (
+                    not specific_employees
+                    and include_all is None
+                    and not condition_based
+                ):
+                    raise forms.ValidationError({field_name: "This field is required"})
+                cleaned_data = super().clean()
+                data = self.fields[field_name].queryset.filter(
+                    id__in=self.data.getlist(field_name)
+                )
+                cleaned_data[field_name] = data
+        cleaned_data = super().clean()
 
         if cleaned_data.get("if_condition") == "range":
             cleaned_data["if_amount"] = 0
@@ -175,6 +209,18 @@ class DeductionForm(forms.ModelForm):
                 }
             kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
+
+        self.fields["specific_employees"] = HorillaMultiSelectField(
+            queryset=Employee.objects.all(),
+            widget=HorillaMultiSelectWidget(
+                filter_route_name="employee-widget-filter",
+                filter_class=EmployeeFilter,
+                filter_instance_contex_name="f",
+                filter_template_path="employee_filters.html",
+                instance=self.instance,
+            ),
+            label="Specific Employees",
+        )
         self.fields["if_condition"].widget.attrs.update(
             {
                 "onchange": "rangeToggle($(this))",
@@ -185,6 +231,27 @@ class DeductionForm(forms.ModelForm):
 
     def clean(self, *args, **kwargs):
         cleaned_data = super().clean(*args, **kwargs)
+
+        specific_employees = self.data.getlist("specific_employees")
+        include_all = self.data.get("include_active_employees")
+        condition_based = self.data.get("is_condition_based")
+
+        for field_name, field_instance in self.fields.items():
+            if isinstance(field_instance, HorillaMultiSelectField):
+                self.errors.pop(field_name, None)
+                if (
+                    not specific_employees
+                    and include_all is None
+                    and not condition_based
+                ):
+                    raise forms.ValidationError({field_name: "This field is required"})
+                cleaned_data = super().clean()
+                data = self.fields[field_name].queryset.filter(
+                    id__in=self.data.getlist(field_name)
+                )
+                cleaned_data[field_name] = data
+        cleaned_data = super().clean()
+
         if cleaned_data.get("if_condition") == "range":
             cleaned_data["if_amount"] = 0
             start_range = cleaned_data.get("start_range")
@@ -556,7 +623,7 @@ class LoanAccountForm(ModelForm):
     class Meta:
         model = LoanAccount
         fields = "__all__"
-        exclude = ["is_active"]
+        exclude = ["is_active", "settled_date"]
         widgets = {
             "provided_date": forms.DateTimeInput(attrs={"type": "date"}),
             "installment_start_date": forms.DateTimeInput(attrs={"type": "date"}),
@@ -581,11 +648,30 @@ class LoanAccountForm(ModelForm):
                     self.instance.deduction_ids.values_list("id", flat=True)
                 )
             ).exists():
-                fields_to_exclude = fields_to_exclude + ["loan_amount", "installments"]
+                fields_to_exclude = fields_to_exclude + [
+                    "loan_amount",
+                    "installments",
+                    "installment_amount",
+                ]
             self.initial["provided_date"] = str(self.instance.provided_date)
             for field in fields_to_exclude:
                 if field in self.fields:
                     del self.fields[field]
+
+    def clean(self, *args, **kwargs):
+        cleaned_data = super().clean(*args, **kwargs)
+
+        if cleaned_data.get("installment_start_date") < cleaned_data.get(
+            "provided_date"
+        ):
+            raise forms.ValidationError(
+                "Installment start date should be greater than or equal to provided date"
+            )
+
+        if cleaned_data.get("installments") <= 0:
+            raise forms.ValidationError("Installments needs to be a positive integer")
+
+        return cleaned_data
 
 
 class AssetFineForm(LoanAccountForm):
@@ -630,16 +716,20 @@ class ReimbursementForm(ModelForm):
         fields = "__all__"
         exclude = ["is_active"]
 
-    def get_encashable_leaves(self, employee):
-        leaves = LeaveType.objects.filter(
-            employee_available_leave__employee_id=employee,
-            employee_available_leave__total_leave_days__gte=1,
-            is_encashable=True,
-        )
-        return leaves
+    if apps.is_installed("leave"):
+
+        def get_encashable_leaves(self, employee):
+            LeaveType = get_horilla_model_class(app_label="leave", model="leavetype")
+            leaves = LeaveType.objects.filter(
+                employee_available_leave__employee_id=employee,
+                employee_available_leave__total_leave_days__gte=1,
+                is_encashable=True,
+            )
+            return leaves
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         exclude_fields = []
         if not self.instance.pk:
             self.initial["allowance_on"] = str(datetime.date.today())
@@ -652,13 +742,18 @@ class ReimbursementForm(ModelForm):
                 else self.instance.employee_id
             )
         self.initial["employee_id"] = employee.id
-        assigned_leaves = self.get_encashable_leaves(employee)
-        self.assigned_leaves = AvailableLeave.objects.filter(
-            leave_type_id__in=assigned_leaves, employee_id=employee
-        )
-        self.fields["leave_type_id"].queryset = assigned_leaves
-        self.fields["leave_type_id"].empty_label = None
-        self.fields["employee_id"].empty_label = None
+        if apps.is_installed("leave"):
+            AvailableLeave = get_horilla_model_class(
+                app_label="leave", model="availableleave"
+            )
+
+            assigned_leaves = self.get_encashable_leaves(employee)
+            self.assigned_leaves = AvailableLeave.objects.filter(
+                leave_type_id__in=assigned_leaves, employee_id=employee
+            )
+            self.fields["leave_type_id"].queryset = assigned_leaves
+            self.fields["leave_type_id"].empty_label = None
+            self.fields["employee_id"].empty_label = None
 
         type_attr = self.fields["type"].widget.attrs
         type_attr["onchange"] = "toggleReimbursmentType($(this))"
@@ -672,6 +767,7 @@ class ReimbursementForm(ModelForm):
             attrs={"type": "date", "class": "oh-input w-100"}
         )
         self.fields["attachment"] = MultipleFileField(label="Attachements")
+        self.fields["attachment"].widget.attrs["accept"] = ".jpg, .jpeg, .png, .pdf"
 
         # deleting fields based on type
         type = None
@@ -769,6 +865,9 @@ class ReimbursementForm(ModelForm):
                     {"leave_type_id": "This leave type is not encashable"}
                 )
             else:
+                AvailableLeave = get_horilla_model_class(
+                    app_label="leave", model="availableleave"
+                )
                 available_leave = AvailableLeave.objects.filter(
                     leave_type_id=leave_type_id, employee_id=employee_id
                 ).first()

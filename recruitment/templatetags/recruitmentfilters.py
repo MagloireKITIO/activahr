@@ -5,13 +5,14 @@ This module is used to write custom template filters.
 
 """
 
+import json
 import uuid
 
 from django import template
+from django.apps import apps
 from django.contrib.auth.models import User
 from django.template.defaultfilters import register
 
-from onboarding.models import OnboardingTask
 from recruitment.models import CandidateRating
 
 # from django.forms.boundfield
@@ -140,7 +141,13 @@ def is_in_task_managers(user):
     """
     This method is used to check the user in the task manager or not
     """
-    return OnboardingTask.objects.filter(employee_id__employee_user_id=user).exists()
+    if apps.is_installed("onboarding"):
+        from onboarding.models import OnboardingTask
+
+        return OnboardingTask.objects.filter(
+            employee_id__employee_user_id=user
+        ).exists()
+    return False
 
 
 @register.filter(name="pipeline_grouper")
@@ -149,3 +156,11 @@ def pipeline_grouper(grouper: dict = {}):
     This method is used itemize the dictionary
     """
     return grouper["title"], grouper["stages"]
+
+
+@register.filter(name="to_json")
+def to_json(value):
+    ordered_list = [
+        {"id": val.id, "stage": val.stage, "type": val.stage_type} for val in value
+    ]
+    return json.dumps(ordered_list)

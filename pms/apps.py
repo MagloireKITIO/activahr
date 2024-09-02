@@ -13,3 +13,21 @@ class PmsConfig(AppConfig):
 
     default_auto_field = "django.db.models.BigAutoField"
     name = "pms"
+
+    def ready(self):
+        from django.urls import include, path
+
+        from horilla.urls import urlpatterns
+
+        urlpatterns.append(
+            path("pms/", include("pms.urls")),
+        )
+        super().ready()
+        try:
+            from pms.signals import start_automation
+
+            start_automation()
+        except:
+            """
+            Migrations are not affected yet
+            """

@@ -1,4 +1,4 @@
-{% load static %}{% load i18n %} {% load yes_no %} {% if messages %}
+{% load static %}{% load i18n %} {% load horillafilters %} {% if messages %}
 <div class="oh-wrapper">
   {% for message in messages %}
   <div class="oh-alert-container">
@@ -88,7 +88,7 @@
           >{% trans "Total Days" %}</span
         >
         <span class="oh-timeoff-modal__stat-count"
-          >{{leave_type.count}}</span
+          >{% if leave_type.limit_leave %}{{leave_type.count}}{% else %}{% trans "No Limit" %}{% endif %}</span
         >
       </div>
       <div class="oh-timeoff-modal__stat">

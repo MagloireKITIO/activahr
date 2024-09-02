@@ -9,6 +9,7 @@ import json
 import os
 import re
 from datetime import date
+from uuid import uuid4
 
 import django
 from django import forms
@@ -64,6 +65,12 @@ def validate_image(value):
     return value
 
 
+def candidate_photo_upload_path(instance, filename):
+    ext = filename.split(".")[-1]
+    filename = f"{instance.name.replace(' ', '_')}_{filename}_{uuid4()}.{ext}"
+    return os.path.join("recruitment/profile/", filename)
+
+
 class SurveyTemplate(HorillaModel):
     """
     SurveyTemplate Model
@@ -73,7 +80,11 @@ class SurveyTemplate(HorillaModel):
     description = models.TextField(null=True, blank=True)
     is_general_template = models.BooleanField(default=False, editable=False)
     company_id = models.ForeignKey(
-        Company, on_delete=models.CASCADE, null=True, blank=True
+        Company,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        verbose_name=_("Company"),
     )
 
     def __str__(self) -> str:
@@ -151,6 +162,12 @@ class Recruitment(HorillaModel):
     skills = models.ManyToManyField(Skill, blank=True)
     objects = HorillaCompanyManager()
     default = models.manager.Manager()
+    optional_profile_image = models.BooleanField(
+        default=False, help_text=_("Profile image not mandatory for candidate creation")
+    )
+    optional_resume = models.BooleanField(
+        default=False, help_text=_("Resume not mandatory for candidate creation")
+    )
 
     class Meta:
         """
@@ -310,7 +327,7 @@ class Candidate(HorillaModel):
         ("other", _("Other")),
     ]
     name = models.CharField(max_length=100, null=True, verbose_name=_("Name"))
-    profile = models.ImageField(upload_to="recruitment/profile", null=True)
+    profile = models.ImageField(upload_to=candidate_photo_upload_path, null=True)
     portfolio = models.URLField(max_length=200, blank=True)
     recruitment_id = models.ForeignKey(
         Recruitment,

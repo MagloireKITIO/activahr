@@ -12,17 +12,27 @@ from itertools import groupby
 from urllib.parse import parse_qs
 
 import pandas as pd
+from django.apps import apps
 from django.contrib import messages
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.db.models import Sum
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse, QueryDict
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
 
 import payroll.models.models
-from asset.models import Asset
 from base.backends import ConfiguredEmailBackend
-from base.methods import closest_numbers, filter_own_records, get_key_instances, sortby
+from base.methods import (
+    closest_numbers,
+    filter_own_records,
+    get_key_instances,
+    get_next_month_same_date,
+    sortby,
+)
 from base.models import Company
 from employee.models import Employee, EmployeeWorkInformation
 from horilla.decorators import (
@@ -32,7 +42,10 @@ from horilla.decorators import (
     permission_required,
 )
 from horilla.group_by import group_by_queryset
-from leave.models import AvailableLeave
+from horilla.horilla_settings import HORILLA_DATE_FORMATS
+from horilla.methods import dynamic_attr, get_horilla_model_class
+
+# from leave.models import AvailableLeave
 from notifications.signals import notify
 from payroll.filters import (
     AllowanceFilter,
@@ -67,9 +80,15 @@ from payroll.models.models import (
     Payslip,
     Reimbursement,
     ReimbursementMultipleAttachment,
+    _create_deductions,
 )
 from payroll.threadings.mail import MailSendThread
 from payroll.views.views import view_created_payslip
+
+
+def return_none(a, b):
+    return None
+
 
 operator_mapping = {
     "equal": operator.eq,
@@ -79,6 +98,7 @@ operator_mapping = {
     "le": operator.le,
     "ge": operator.ge,
     "icontains": operator.contains,
+    "range": return_none,
 }
 
 
@@ -153,18 +173,6 @@ def payroll_calculation(employee, start_date, end_date):
     tax_deductions = calculate_tax_deduction(**kwargs)
     federal_tax = calculate_taxable_amount(**kwargs)
 
-    # gross_pay = (basic_pay + total_allowances)
-    # deduction = (
-    #   post_tax_deductions_amount
-    #   + pre_tax_deductions _amount
-    #   + tax_deductions + federal_tax_amount
-    #   + lop_amount
-    #   + one_time_basic_deduction_amount
-    #   + one_time_gross_deduction_amount
-    #   )
-    # net_pay = gross_pay - deduction
-    # net_pay = net_pay - net_pay_deduction
-
     total_allowance = sum(item["amount"] for item in allowances["allowances"])
     total_pretax_deduction = sum(
         item["amount"] for item in pretax_deductions["pretax_deductions"]
@@ -232,6 +240,126 @@ def payroll_calculation(employee, start_date, end_date):
     payslip_data["json_data"] = json_data
     payslip_data["installments"] = installments
     return payslip_data
+
+
+@login_required
+@hx_request_required
+def allowances_deductions_tab(request, emp_id):
+    """
+    Retrieve and render the allowances and deductions applicable to an employee.
+
+    This view function retrieves the active contract, basic pay, allowances, and
+    deductions for a specified employee. It filters allowances and deductions
+    based on various conditions, including specific employee assignments and
+    condition-based rules. The results are then rendered in the allowance and
+    deduction tab template.
+    """
+    employee_deductions = []
+    employee_allowances = []
+    employee = Employee.objects.get(id=emp_id)
+    active_contracts = employee.contract_set.filter(contract_status="active").first()
+    basic_pay = active_contracts.wage if active_contracts else None
+    if basic_pay:
+        allowances = (
+            Allowance.objects.filter(specific_employees=employee)
+            | Allowance.objects.filter(is_condition_based=True).exclude(
+                exclude_employees=employee
+            )
+            | Allowance.objects.filter(include_active_employees=True).exclude(
+                exclude_employees=employee
+            )
+        )
+
+        for allowance in allowances:
+            applicable = True
+            if allowance.is_condition_based:
+                conditions = list(
+                    allowance.other_conditions.values_list(
+                        "field", "condition", "value"
+                    )
+                )
+                conditions.append(
+                    (
+                        allowance.field,
+                        allowance.condition,
+                        allowance.value.lower().replace(" ", "_"),
+                    )
+                )
+                for field, operator, value in conditions:
+                    val = dynamic_attr(employee, field)
+                    if val is None or not operator_mapping.get(operator)(
+                        val, type(val)(value)
+                    ):
+                        applicable = False
+                        break
+            if applicable:
+                employee_allowances.append(allowance)
+        employee_allowances = [
+            allowance
+            for allowance in employee_allowances
+            if operator_mapping.get(allowance.if_condition)(
+                basic_pay if allowance.if_choice == "basic_pay" else 0,
+                allowance.if_amount,
+            )
+        ]
+
+        # Find the applicable deductions for the employee
+        deductions = (
+            Deduction.objects.filter(
+                specific_employees=employee,
+            )
+            | Deduction.objects.filter(
+                is_condition_based=True,
+            ).exclude(exclude_employees=employee)
+            | Deduction.objects.filter(
+                include_active_employees=True,
+            ).exclude(exclude_employees=employee)
+        )
+        for deduction in deductions:
+            applicable = True
+            if deduction.is_condition_based:
+                conditions = list(
+                    deduction.other_conditions.values_list(
+                        "field", "condition", "value"
+                    )
+                )
+                conditions.append(
+                    (
+                        deduction.field,
+                        deduction.condition,
+                        deduction.value.lower().replace(" ", "_"),
+                    )
+                )
+                for field, operator, value in conditions:
+                    val = dynamic_attr(employee, field)
+                    if val is None or not operator_mapping.get(operator)(
+                        val, type(val)(value)
+                    ):
+                        applicable = False
+                        break
+            if applicable:
+                employee_deductions.append(deduction)
+
+    allowance_ids = (
+        json.dumps([instance.id for instance in employee_deductions])
+        if employee_deductions
+        else None
+    )
+    deduction_ids = (
+        json.dumps([instance.id for instance in employee_deductions])
+        if employee_deductions
+        else None
+    )
+    context = {
+        "active_contracts": active_contracts,
+        "basic_pay": basic_pay,
+        "allowances": employee_allowances if employee_allowances else None,
+        "allowance_ids": allowance_ids,
+        "deductions": employee_deductions if employee_deductions else None,
+        "deduction_ids": deduction_ids,
+        "employee": employee,
+    }
+    return render(request, "tabs/allowance_deduction-tab.html", context=context)
 
 
 @login_required
@@ -446,7 +574,7 @@ def view_single_deduction(request, deduction_id):
         try:
             employee_id = int(HTTP_REFERERS[-1])
             context["close_hx_url"] = (
-                f"/employee/allowances-deductions-tab/{employee_id}"
+                f"/payroll/allowances-deductions-tab/{employee_id}"
             )
             context["close_hx_target"] = "#allowance_deduction"
         except ValueError:
@@ -454,7 +582,7 @@ def view_single_deduction(request, deduction_id):
 
     elif HTTP_REFERER.endswith("employee-profile/"):
         context["close_hx_url"] = (
-            f"/employee/allowances-deductions-tab/{request.user.employee_get.id}"
+            f"/payroll/allowances-deductions-tab/{request.user.employee_get.id}"
         )
         context["close_hx_target"] = "#allowance_deduction"
 
@@ -537,7 +665,7 @@ def delete_deduction(request, deduction_id, emp_id=None):
 
     paths = {
         "payroll-deduction-container": f"/payroll/filter-deduction?{request.GET.urlencode()}",
-        "allowance_deduction": f"/employee/allowances-deductions-tab/{emp_id}",
+        "allowance_deduction": f"/payroll/allowances-deductions-tab/{emp_id}",
         "objectDetailsModalTarget": f"/payroll/single-deduction-view/{next_instance}?instances_ids={instances_list}",
     }
     http_hx_target = request.META.get("HTTP_HX_TARGET")
@@ -850,11 +978,22 @@ def filter_payslip(request):
 
 
 @login_required
+@permission_required("payroll.change_payslip")
 def payslip_export(request):
     """
     This view exports payslip data based on selected fields and filters,
     and generates an Excel file for download.
     """
+    if request.META.get("HTTP_HX_REQUEST"):
+        return render(
+            request,
+            "payroll/payslip/payslip_export_filter.html",
+            {
+                "export_column": forms.PayslipExportColumnForm(),
+                "export_filter": PayslipFilter(request.GET),
+            },
+        )
+
     choices_mapping = {
         "draft": _("Draft"),
         "review_ongoing": _("Review Ongoing"),
@@ -912,26 +1051,12 @@ def payslip_export(request):
                     )
                 else:
                     date_format = "MMM. D, YYYY"
-                # Define date formats
-                date_formats = {
-                    "DD-MM-YYYY": "%d-%m-%Y",
-                    "DD.MM.YYYY": "%d.%m.%Y",
-                    "DD/MM/YYYY": "%d/%m/%Y",
-                    "MM/DD/YYYY": "%m/%d/%Y",
-                    "YYYY-MM-DD": "%Y-%m-%d",
-                    "YYYY/MM/DD": "%Y/%m/%d",
-                    "MMMM D, YYYY": "%B %d, %Y",
-                    "DD MMMM, YYYY": "%d %B, %Y",
-                    "MMM. D, YYYY": "%b. %d, %Y",
-                    "D MMM. YYYY": "%d %b. %Y",
-                    "dddd, MMMM D, YYYY": "%A, %B %d, %Y",
-                }
 
                 # Convert the string to a datetime.date object
                 start_date = datetime.strptime(str(value), "%Y-%m-%d").date()
 
                 # Print the formatted date for each format
-                for format_name, format_string in date_formats.items():
+                for format_name, format_string in HORILLA_DATE_FORMATS.items():
                     if format_name == date_format:
                         data = start_date.strftime(format_string)
             else:
@@ -939,14 +1064,15 @@ def payslip_export(request):
             payslips_data[column_name].append(data)
 
     data_frame = pd.DataFrame(data=payslips_data)
-    data_frame = data_frame.style.applymap(
-        lambda x: "text-align: center", subset=pd.IndexSlice[:, :]
+    response = HttpResponse(
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    response = HttpResponse(content_type="application/ms-excel")
     response["Content-Disposition"] = f'attachment; filename="{file_name}"'
-    data_frame.to_excel(response, index=False)
+
     writer = pd.ExcelWriter(response, engine="xlsxwriter")
-    data_frame.to_excel(writer, index=False, sheet_name="Sheet1")
+    data_frame.style.applymap(lambda x: "text-align: center").to_excel(
+        writer, index=False, sheet_name="Sheet1"
+    )
     worksheet = writer.sheets["Sheet1"]
     worksheet.set_column("A:Z", 20)
     writer.close()
@@ -1200,13 +1326,72 @@ def delete_loan(request):
     Delete loan
     """
     ids = request.GET.getlist("ids")
-    loans = LoanAccount.objects.filter(id__in=ids, settled=False)
+    loans = LoanAccount.objects.filter(id__in=ids)
     # This 👇 would'nt trigger the delete method in the model
     # loans.delete()
     for loan in loans:
-        loan.delete()
-    messages.success(request, "Loan account deleted")
+        if (
+            not loan.settled
+            and not Payslip.objects.filter(
+                installment_ids__in=list(
+                    loan.deduction_ids.values_list("id", flat=True)
+                )
+            ).exists()
+        ):
+            loan.delete()
+            messages.success(request, "Loan account deleted")
+        else:
+            messages.error(request, "Loan account cannot be deleted")
     return redirect(view_loans)
+
+
+@login_required
+@permission_required("payroll.view_loanaccount")
+def edit_installment_amount(request):
+    loan_id = request.GET.get("loan_id")
+    ded_id = request.GET.get("ded_id")
+    value = float(request.POST.get("amount")) if request.POST.get("amount") else 0
+
+    loan = LoanAccount.objects.filter(id=loan_id).first()
+    deductions = loan.deduction_ids.all().order_by("one_time_date")
+    deduction = deductions.filter(id=ded_id).first()
+    deductions_before = deductions.filter(one_time_date__lt=deduction.one_time_date)
+    deductions_after = deductions.filter(one_time_date__gt=deduction.one_time_date)
+    total_sum = deductions_before.aggregate(Sum("amount"))["amount__sum"] or 0
+
+    balance_instalment = len(deductions_after) if len(deductions_after) != 0 else 1
+
+    new_installment = (loan.loan_amount - total_sum - value) / balance_instalment
+    new_installment = round(new_installment, 2)
+    if total_sum + value > loan.loan_amount:
+        value = loan.loan_amount - total_sum
+        new_installment = 0
+
+    if not deduction.installment_payslip():
+        deduction.amount = value
+        deduction.save()
+
+        for item in deductions.filter(one_time_date__gt=deduction.one_time_date):
+            item.amount = new_installment
+            item.save()
+
+        if len(deductions_after) == 0 and new_installment != 0:
+            date = get_next_month_same_date(deduction.one_time_date)
+            installment = _create_deductions(loan, new_installment, date)
+            loan.deduction_ids.add(installment)
+
+        messages.success(request, "Installment amount updated successfully")
+    else:
+        messages.error(request, "Cannot change paid installments ")
+
+    return render(
+        request,
+        "payroll/loan/installments.html",
+        {
+            "installments": loan.deduction_ids.all(),
+            "loan": loan,
+        },
+    )
 
 
 @login_required
@@ -1257,6 +1442,8 @@ def asset_fine(request):
     """
     Add asset fine method
     """
+    if apps.is_installed("asset"):
+        Asset = get_horilla_model_class(app_label="asset", model="asset")
     asset_id = request.GET["asset_id"]
     employee_id = request.GET["employee_id"]
     asset = Asset.objects.get(id=asset_id)
@@ -1398,6 +1585,11 @@ def get_assigned_leaves(request):
     This method is used to return assigned leaves of the employee
     in Json
     """
+    if apps.is_installed("leave"):
+        AvailableLeave = get_horilla_model_class(
+            app_label="leave", model="availableleave"
+        )
+
     assigned_leaves = (
         AvailableLeave.objects.filter(
             employee_id__id=request.GET["employeeId"],
@@ -1610,3 +1802,389 @@ def get_contribution_report(request):
         "payroll/dashboard/contribution.html",
         {"contribution_deductions": contribution_deductions},
     )
+
+
+def all_deductions(pay_head):
+
+    extracted_items = []
+
+    potential_lists = [
+        "pretax_deductions",
+        "post_tax_deductions",
+        "tax_deductions",
+    ]
+
+    for list_name in potential_lists:
+        if list_name in pay_head.keys():
+            for item in pay_head[list_name]:
+                if "deduction_id" in item:
+                    extracted_items.append(item)
+
+    return extracted_items
+
+
+@login_required
+def payslip_detailed_export_data(request):
+    """
+    This view create the data for exporting payslip data based on selected fields and filters,
+    """
+    choices_mapping = {
+        "draft": _("Draft"),
+        "review_ongoing": _("Review Ongoing"),
+        "confirmed": _("Confirmed"),
+        "paid": _("Paid"),
+    }
+    selected_columns = []
+    payslips_data = []
+    totals = {}
+    payslips = PayslipFilter(request.GET).qs
+    today_date = date.today().strftime("%Y-%m-%d")
+    file_name = f"Payslip_excel_{today_date}.xlsx"
+    selected_fields = request.GET.getlist("selected_fields")
+    form = forms.PayslipExportColumnForm()
+
+    allowances = Allowance.objects.all()
+    deductions = Deduction.objects.all()
+
+    if not selected_fields:
+        selected_fields = form.fields["selected_fields"].initial
+
+    for field in forms.excel_columns:
+        value = field[0]
+        key = field[1]
+        if value in selected_fields:
+            selected_columns.append((value, key))
+
+    selected_columns += [
+        (value.title, value.title)
+        for value in allowances.filter(
+            one_time_date__isnull=True, include_active_employees=True
+        )
+    ]
+    selected_columns += [
+        ("other_allowances", "Other Allowances"),
+        ("total_allowances", "Total Allowances"),
+    ]
+
+    selected_columns += [
+        (value.title, value.title)
+        for value in deductions.filter(
+            one_time_date__isnull=True,
+            include_active_employees=True,
+            update_compensation__isnull=True,
+        )
+    ]
+    selected_columns += [
+        ("federal_tax", "Federal Tax"),
+        ("other_deductions", "Other Deductions"),
+        ("total_deductions", "Total Deductions"),
+    ]
+
+    allowance_totals = {
+        column_name.title: 0
+        for column_name in allowances.filter(
+            one_time_date__isnull=True,
+            include_active_employees=True,
+        )
+    }
+
+    deduction_totals = {
+        column_name.title: 0
+        for column_name in deductions.filter(
+            one_time_date__isnull=True,
+            include_active_employees=True,
+            update_compensation__isnull=True,
+        )
+    }
+
+    other_totals = {
+        "Other Allowances": 0,
+        "Other Deductions": 0,
+        "Total Allowances": 0,
+        "Total Deductions": 0,
+        "Net Pay": 0,
+        "Gross Pay": 0,
+        "Federal Tax": 0,
+    }
+
+    totals.update(allowance_totals)
+    totals.update(deduction_totals)
+    totals.update(other_totals)
+
+    for payslip in payslips:
+        payslip_data = {}
+        other_allowances_sum = 0
+        other_deductions_sum = 0
+        total_allowance = 0
+        total_deduction = 0
+        total_federal_tax = 0
+
+        federal_tax = payslip.pay_head_data["federal_tax"]
+        total_federal_tax += federal_tax
+
+        allos = payslip.pay_head_data["allowances"]
+        deducts = all_deductions(payslip.pay_head_data)
+
+        if allos:
+            for allowance in allos:
+                if not any(
+                    str(allowance["title"]) == str(column_name)
+                    for item, column_name in selected_columns
+                ):
+                    other_allowances_sum += (
+                        allowance["amount"] if allowance["amount"] is not None else 0
+                    )
+                total_allowance += allowance["amount"]
+
+        if deducts:
+            for deduction in deducts:
+                if not any(
+                    str(deduction["title"]) == str(column_name)
+                    for item, column_name in selected_columns
+                ):
+                    other_deductions_sum += (
+                        deduction["amount"] if deduction["amount"] is not None else 0
+                    )
+                total_deduction += deduction["amount"]
+
+        for column_value, column_name in selected_columns:
+            nested_attributes = column_value.split("__")
+            value = payslip
+            for attr in nested_attributes:
+                value = getattr(value, attr, None)
+                if value is None:
+                    break
+            data = str(value) if value is not None else ""
+            if column_name == "Status":
+                data = choices_mapping.get(value, "")
+
+            if isinstance(value, date):
+                user = request.user
+                employee = user.employee_get
+                info = EmployeeWorkInformation.objects.filter(employee_id=employee)
+                if info.exists():
+                    for i in info:
+                        employee_company = i.company_id
+                    company_name = Company.objects.filter(company=employee_company)
+                    emp_company = company_name.first()
+
+                    date_format = (
+                        emp_company.date_format if emp_company else "MMM. D, YYYY"
+                    )
+                else:
+                    date_format = "MMM. D, YYYY"
+
+                start_date = datetime.strptime(str(value), "%Y-%m-%d").date()
+
+                for format_name, format_string in HORILLA_DATE_FORMATS.items():
+                    if format_name == date_format:
+                        data = start_date.strftime(format_string)
+            else:
+                data = str(value) if value is not None else ""
+
+            if allos:
+                for allowance in allos:
+                    if str(allowance["title"]) == str(column_name):
+                        data = (
+                            float(allowance["amount"])
+                            if allowance["title"] is not None
+                            else 0
+                        )
+
+            if deducts:
+                for deduction in deducts:
+                    if str(deduction["title"]) == str(column_name):
+                        data = (
+                            float(deduction["amount"])
+                            if deduction["title"] is not None
+                            else 0
+                        )
+
+            payslip_data[column_name] = data
+            if column_name in totals:
+                try:
+                    totals[column_name] += float(data)
+                except ValueError:
+                    pass
+
+        payslip_data["Other Allowances"] = other_allowances_sum
+        payslip_data["Other Deductions"] = other_deductions_sum
+        payslip_data["Total Allowances"] = total_allowance
+        payslip_data["Total Deductions"] = total_deduction
+        payslip_data["Federal Tax"] = federal_tax
+
+        totals["Other Allowances"] += other_allowances_sum
+        totals["Other Deductions"] += other_deductions_sum
+        totals["Total Allowances"] += total_allowance
+        totals["Total Deductions"] += total_deduction
+        totals["Federal Tax"] += federal_tax
+
+        payslips_data.append(payslip_data)
+
+    totals_row = {}
+
+    for item, column_name in selected_columns:
+        if column_name in totals:
+            totals_row[column_name] = totals[column_name]
+        else:
+            totals_row[column_name] = "-"
+
+    totals_row["Other Allowances"] = totals["Other Allowances"]
+    totals_row["Other Deductions"] = totals["Other Deductions"]
+    totals_row["Total Allowances"] = totals["Total Allowances"]
+    totals_row["Total Deductions"] = totals["Total Deductions"]
+    totals_row["Employee"] = "Total"
+
+    payslips_data.append(totals_row)
+
+    return {
+        "payslips_data": payslips_data,
+        "selected_columns": selected_columns,
+        "allowances": list(
+            allowances.filter(
+                one_time_date__isnull=True,
+                include_active_employees=True,
+            ).values_list("title", flat=True)
+        ),
+        "deductions": list(
+            deductions.filter(
+                one_time_date__isnull=True,
+                include_active_employees=True,
+                update_compensation__isnull=True,
+            ).values_list("title", flat=True)
+        ),
+    }
+
+
+@login_required
+@permission_required("payroll.change_payslip")
+def payslip_detailed_export(request):
+    """
+    Generate an Excel file for download containing detailed payslip data based on
+    filters.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request object.
+
+    Returns:
+        HttpResponse: A response object with the Excel file as an attachment.
+    """
+
+    if request.META.get("HTTP_HX_REQUEST"):
+        return render(
+            request,
+            "payroll/payslip/payslip_export_filter.html",
+            {
+                "export_column": forms.PayslipExportColumnForm(),
+                "export_filter": PayslipFilter(request.GET),
+                "report": True,
+            },
+        )
+
+    export_data = payslip_detailed_export_data(request)
+    payslips_data = export_data["payslips_data"]
+    selected_columns = export_data["selected_columns"]
+    allowances = export_data["allowances"]
+    deductions = export_data["deductions"]
+
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+    right_border = Border(right=Side(style="thin"))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Payslips"
+
+    header_row = [col_name for _, col_name in selected_columns]
+    allowances_header = allowances + ["Other Allowances", "Total Allowances"]
+    deductions_header = deductions + [
+        "Federal Tax",
+        "Other Deductions",
+        "Total Deductions",
+    ]
+
+    basic_cols = len(header_row) - len(allowances_header) - len(deductions_header)
+    allowance_cols = len(allowances_header)
+    deduction_cols = len(deductions_header)
+
+    merged_sections = [
+        (1, basic_cols, "Employee Details", "0000FF"),
+        (basic_cols + 1, basic_cols + allowance_cols, "Allowances", "008000"),
+        (
+            basic_cols + allowance_cols + 1,
+            basic_cols + allowance_cols + deduction_cols,
+            "Deductions",
+            "FF0000",
+        ),
+    ]
+
+    bold_cols = [
+        1,
+        basic_cols + allowance_cols,
+        basic_cols + allowance_cols + deduction_cols,
+    ]
+
+    for start_col, end_col, title, color in merged_sections:
+        ws.merge_cells(
+            start_row=1, start_column=start_col, end_row=1, end_column=end_col
+        )
+        cell = ws.cell(row=1, column=start_col, value=title)
+        cell.font = Font(color=color, bold=True)
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin_border
+
+        if end_col <= len(header_row):
+            ws.cell(row=1, column=end_col).border = thin_border + right_border
+    last_row = len(payslips_data) + 2
+    ws.row_dimensions[1].height = 25
+    ws.row_dimensions[2].height = 20
+    ws.row_dimensions[last_row].height = 25
+
+    subheaders = [
+        (header_row[:basic_cols], Font(bold=True, color="0000FF")),
+        (allowances_header, Font(bold=True, color="008000")),
+        (deductions_header, Font(bold=True, color="FF0000")),
+    ]
+
+    col_num = 1
+    for subheader, font in subheaders:
+        for header in subheader:
+            cell = ws.cell(row=2, column=col_num, value=str(header))
+            cell.font = font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+            col_num += 1
+
+    for row_num, payslip_data in enumerate(payslips_data, 3):
+        for col_num, header in enumerate(header_row, 1):
+            cell = ws.cell(
+                row=row_num, column=col_num, value=payslip_data.get(header, "")
+            )
+            if row_num == last_row:
+                cell.font = Font(bold=True, color="800080")
+                cell.alignment = Alignment(horizontal="right")
+            elif col_num in bold_cols:
+                cell.font = Font(bold=True)
+            cell.border = thin_border
+
+    for col_num, _ in enumerate(header_row, 1):
+        max_length = max(
+            len(str(cell.value))
+            for cell in ws[get_column_letter(col_num)]
+            if cell.value is not None
+        )
+        ws.column_dimensions[get_column_letter(col_num)].width = max_length + 2
+
+    ws.freeze_panes = ws["B3"]
+
+    response = HttpResponse(
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    response["Content-Disposition"] = "attachment; filename=Payslip_excel.xlsx"
+    wb.save(response)
+
+    return response

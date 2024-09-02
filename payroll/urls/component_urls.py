@@ -10,6 +10,11 @@ from payroll.models.models import Allowance, Deduction
 from payroll.views import component_views
 
 urlpatterns = [
+    path(
+        "allowances-deductions-tab/<int:emp_id>",
+        component_views.allowances_deductions_tab,
+        name="allowances-deductions-tab",
+    ),
     path("create-allowance", component_views.create_allowance, name="create-allowance"),
     path("view-allowance/", component_views.view_allowance, name="view-allowance"),
     path(
@@ -96,6 +101,11 @@ urlpatterns = [
         component_views.view_installments,
         name="view-installments",
     ),
+    path(
+        "edit-installment-amount/",
+        component_views.edit_installment_amount,
+        name="edit-installment-amount",
+    ),
     path("delete-loan/", component_views.delete_loan, name="delete-loan"),
     path("search-loan/", component_views.search_loan, name="search-loan"),
     path(
@@ -152,5 +162,10 @@ urlpatterns = [
         "get-contribution-report",
         component_views.get_contribution_report,
         name="get-contribution-report",
+    ),
+    path(
+        "payslip-detailed-export",
+        component_views.payslip_detailed_export,
+        name="payslip-detailed-export",
     ),
 ]

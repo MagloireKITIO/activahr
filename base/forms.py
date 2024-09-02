@@ -6,12 +6,14 @@ This module is used to register forms for base module
 
 import calendar
 import datetime
+import ipaddress
 import os
 import uuid
 from datetime import date, timedelta
 from typing import Any
 
 from django import forms
+from django.apps import apps
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import SetPasswordForm, _unicode_ci_compare
@@ -38,6 +40,7 @@ from base.models import (
     AttendanceAllowedIP,
     BaserequestFile,
     Company,
+    CompanyLeaves,
     Department,
     DriverViewed,
     DynamicEmailConfiguration,
@@ -46,9 +49,12 @@ from base.models import (
     EmployeeShiftDay,
     EmployeeShiftSchedule,
     EmployeeType,
+    Holidays,
+    HorillaMailTemplate,
     JobPosition,
     JobRole,
     MultipleApprovalCondition,
+    PenaltyAccounts,
     RotatingShift,
     RotatingShiftAssign,
     RotatingWorkType,
@@ -56,15 +62,17 @@ from base.models import (
     ShiftRequest,
     ShiftRequestComment,
     Tags,
+    TrackLateComeEarlyOut,
     WorkType,
     WorkTypeRequest,
     WorkTypeRequestComment,
 )
 from employee.filters import EmployeeFilter
 from employee.forms import MultipleFileField
-from employee.models import Employee, EmployeeTag
+from employee.models import Employee
 from horilla import horilla_middlewares
 from horilla.horilla_middlewares import _thread_locals
+from horilla.methods import get_horilla_model_class
 from horilla_audit.models import AuditTag
 from horilla_widgets.widgets.horilla_multi_select_field import HorillaMultiSelectField
 from horilla_widgets.widgets.select_widgets import HorillaMultiSelectWidget
@@ -468,37 +476,76 @@ class JobPositionForm(ModelForm):
         fields = "__all__"
         exclude = ["is_active"]
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if not self.instance.pk:
-            self.fields["department_id"] = forms.ModelMultipleChoiceField(
-                queryset=self.fields["department_id"].queryset
-            )
-            attrs = self.fields["department_id"].widget.attrs
-            attrs["class"] = "oh-select oh-select2 w-100"
-            attrs["style"] = "height:45px;"
 
-    def save(self, commit, *args, **kwargs) -> Any:
+class JobPositionMultiForm(ModelForm):
+    """
+    JobPosition model's form
+    """
+
+    department_id = HorillaMultiSelectField(queryset=Department.objects.all())
+
+    class Meta:
+        model = JobPosition
+        fields = "__all__"
+        exclude = ["department_id", "is_active"]
+        widgets = {
+            "department_id": forms.SelectMultiple(
+                attrs={
+                    "class": "oh-select oh-select2 w-100",
+                    "style": "height:45px;",
+                }
+            ),
+        }
+
+    def clean(self):
+        """
+        Validate that the job position does not already exist in the selected departments.
+        """
+        cleaned_data = super().clean()
+        department_ids = self.data.getlist("department_id")
+        job_position = self.data.get("job_position")
+
+        existing_positions = JobPosition.objects.filter(
+            department_id__in=department_ids, job_position=job_position
+        )
+
+        if existing_positions.exists():
+            existing_deps = existing_positions.values_list("department_id", flat=True)
+            dep_names = Department.objects.filter(id__in=existing_deps).values_list(
+                "department", flat=True
+            )
+            raise ValidationError(
+                {
+                    "department_id": _("Job position already exists under {}").format(
+                        ", ".join(dep_names)
+                    )
+                }
+            )
+        return cleaned_data
+
+    def save(self, *args, **kwargs):
+        """
+        Save the job positions for each selected department.
+        """
         if not self.instance.pk:
             request = getattr(_thread_locals, "request")
-            department = Department.objects.filter(
-                id__in=self.data.getlist("department_id")
-            )
+            department_ids = self.data.getlist("department_id")
+            job_position = self.data.get("job_position")
             positions = []
-            for dep in department:
-                position = JobPosition()
-                position.department_id = dep
-                position.job_position = self.data["job_position"]
-                form_data = self.data["job_position"]
+
+            for dep_id in department_ids:
+                dep = Department.objects.get(id=dep_id)
                 if JobPosition.objects.filter(
-                    department_id=dep, job_position=form_data
+                    department_id=dep, job_position=job_position
                 ).exists():
                     messages.error(request, f"Job position already exists under {dep}")
                 else:
+                    position = JobPosition(department_id=dep, job_position=job_position)
                     position.save()
-                positions.append(position.pk)
+                    positions.append(position.pk)
+
             return JobPosition.objects.filter(id__in=positions)
-        super().save(commit, *args, **kwargs)
+        return super().save(*args, **kwargs)
 
 
 class JobRoleForm(ModelForm):
@@ -716,6 +763,10 @@ class RotatingWorkTypeAssignForm(ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         reload_queryset(self.fields)
+        for field_name, field in self.fields.items():
+            if field.required:
+                self.fields[field_name].label_suffix = " *"
+
         self.fields["rotate_every_weekend"].widget.attrs.update(
             {
                 "class": "w-100",
@@ -821,7 +872,7 @@ class RotatingWorkTypeAssignForm(ModelForm):
             rotating_work_type_assign.current_work_type = (
                 employee.employee_work_info.work_type_id
             )
-            rotating_work_type_assign.next_work_type = rotating_work_type.work_type2
+            rotating_work_type_assign.next_work_type = rotating_work_type.work_type1
             rotating_work_type_assign.additional_data["next_shift_index"] = 1
             based_on = self.cleaned_data["based_on"]
             start_date = self.cleaned_data["start_date"]
@@ -881,6 +932,9 @@ class RotatingWorkTypeAssignUpdateForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         reload_queryset(self.fields)
+        for field_name, field in self.fields.items():
+            if field.required:
+                self.fields[field_name].label_suffix = " *"
 
         self.fields["rotate_every_weekend"].widget.attrs.update(
             {
@@ -1007,26 +1061,78 @@ class EmployeeShiftScheduleUpdateForm(ModelForm):
         Meta class for additional options
         """
 
-        fields = "__all__"
-        exclude = ["is_active"]
-        widgets = {
-            "start_time": DateInput(attrs={"type": "time"}),
-            "end_time": DateInput(attrs={"type": "time"}),
-        }
         model = EmployeeShiftSchedule
+        fields = "__all__"
+        exclude = ["is_active", "is_night_shift"]
+        widgets = {
+            "start_time": forms.TimeInput(attrs={"type": "time"}),
+            "end_time": forms.TimeInput(attrs={"type": "time"}),
+        }
 
     def __init__(self, *args, **kwargs):
-        if instance := kwargs.get("instance"):
-            # """
-            # django forms not showing value inside the date, time html element.
-            # so here overriding default forms instance method to set initial value
-            # """
-            initial = {
-                "start_time": instance.start_time.strftime("%H:%M"),
-                "end_time": instance.end_time.strftime("%H:%M"),
-            }
-            kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
+        instance = kwargs.get("instance")
+
+        if instance:
+            self.fields["start_time"].initial = (
+                instance.start_time.strftime("%H:%M") if instance.start_time else None
+            )
+            self.fields["end_time"].initial = (
+                instance.end_time.strftime("%H:%M") if instance.end_time else None
+            )
+            if apps.is_installed("attendance"):
+                self.fields["auto_punch_out_time"].initial = (
+                    instance.auto_punch_out_time.strftime("%H:%M")
+                    if instance.auto_punch_out_time
+                    else None
+                )
+
+        if not apps.is_installed("attendance"):
+            self.fields.pop("auto_punch_out_time", None)
+            self.fields.pop("is_auto_punch_out_enabled", None)
+        else:
+            self.fields["auto_punch_out_time"].widget = forms.TimeInput(
+                attrs={"type": "time", "class": "oh-input w-100 form-control"}
+            )
+            self.fields["is_auto_punch_out_enabled"].widget.attrs.update(
+                {"onchange": "toggleDivVisibility(this)"}
+            )
+
+    def as_p(self):
+        """
+        Render the form fields as HTML table rows with Bootstrap styling.
+        """
+
+        context = {"form": self}
+        table_html = render_to_string("horilla_form.html", context)
+        return table_html
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if apps.is_installed("attendance"):
+            auto_punch_out_enabled = cleaned_data.get("is_auto_punch_out_enabled")
+            auto_punch_out_time = cleaned_data.get("auto_punch_out_time")
+            end_time = cleaned_data.get("end_time")
+
+            if auto_punch_out_enabled:
+                if not auto_punch_out_time:
+                    raise ValidationError(
+                        {
+                            "auto_punch_out_time": _(
+                                "Automatic punch out time is required when automatic punch out is enabled."
+                            )
+                        }
+                    )
+                elif auto_punch_out_time < end_time:
+                    raise ValidationError(
+                        {
+                            "auto_punch_out_time": _(
+                                "Automatic punch out time cannot be earlier than the end time."
+                            )
+                        }
+                    )
+
+        return cleaned_data
 
 
 class EmployeeShiftScheduleForm(ModelForm):
@@ -1061,10 +1167,61 @@ class EmployeeShiftScheduleForm(ModelForm):
                 "start_time": instance.start_time.strftime("%H:%M"),
                 "end_time": instance.end_time.strftime("%H:%M"),
             }
+            if apps.is_installed("attendance"):
+                initial["auto_punch_out_time"] = (
+                    instance.auto_punch_out_time.strftime("%H:%M")
+                    if instance.auto_punch_out_time
+                    else None
+                )
             kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
         self.fields["day"].widget.attrs.update({"id": str(uuid.uuid4())})
         self.fields["shift_id"].widget.attrs.update({"id": str(uuid.uuid4())})
+        if not apps.is_installed("attendance"):
+            self.fields.pop("auto_punch_out_time", None)
+            self.fields.pop("is_auto_punch_out_enabled", None)
+        else:
+            self.fields["auto_punch_out_time"].widget = forms.TimeInput(
+                attrs={"type": "time", "class": "oh-input w-100 form-control"}
+            )
+            self.fields["is_auto_punch_out_enabled"].widget.attrs.update(
+                {"onchange": "toggleDivVisibility(this)"}
+            )
+
+    def as_p(self):
+        """
+        Render the form fields as HTML table rows with Bootstrap styling.
+        """
+
+        context = {"form": self}
+        table_html = render_to_string("horilla_form.html", context)
+        return table_html
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if apps.is_installed("attendance"):
+            auto_punch_out_enabled = self.cleaned_data["is_auto_punch_out_enabled"]
+            auto_punch_out_time = self.cleaned_data["auto_punch_out_time"]
+            end_time = self.cleaned_data["end_time"]
+            if auto_punch_out_enabled:
+                if not auto_punch_out_time:
+                    raise ValidationError(
+                        {
+                            "auto_punch_out_time": _(
+                                "Automatic punch out time is required when automatic punch out is enabled."
+                            )
+                        }
+                    )
+            if auto_punch_out_enabled and auto_punch_out_time and end_time:
+                if auto_punch_out_time < end_time:
+                    raise ValidationError(
+                        {
+                            "auto_punch_out_time": _(
+                                "Automatic punch out time cannot be earlier than the end time."
+                            )
+                        }
+                    )
+        return cleaned_data
 
     def save(self, commit=True):
         instance = super().save(commit=False)
@@ -1249,6 +1406,10 @@ class RotatingShiftAssignForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         reload_queryset(self.fields)
+        for field_name, field in self.fields.items():
+            if field.required:
+                self.fields[field_name].label_suffix = " *"
+
         self.fields["rotate_every_weekend"].widget.attrs.update(
             {
                 "class": "w-100 ",
@@ -1412,6 +1573,10 @@ class RotatingShiftAssignUpdateForm(ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         reload_queryset(self.fields)
+        for field_name, field in self.fields.items():
+            if field.required:
+                self.fields[field_name].label_suffix = " *"
+
         self.fields["rotate_every_weekend"].widget.attrs.update(
             {
                 "class": "w-100 ",
@@ -1526,7 +1691,7 @@ class ShiftRequestForm(ModelForm):
         Render the form fields as HTML table rows with Bootstrap styling.
         """
         context = {"form": self}
-        table_html = render_to_string("attendance_form.html", context)
+        table_html = render_to_string("horilla_form.html", context)
         return table_html
 
     def save(self, commit: bool = ...):
@@ -1589,7 +1754,7 @@ class ShiftAllocationForm(ModelForm):
         Render the form fields as HTML table rows with Bootstrap styling.
         """
         context = {"form": self}
-        table_html = render_to_string("attendance_form.html", context)
+        table_html = render_to_string("horilla_form.html", context)
         return table_html
 
     def save(self, commit: bool = ...):
@@ -1638,7 +1803,7 @@ class WorkTypeRequestForm(ModelForm):
         Render the form fields as HTML table rows with Bootstrap styling.
         """
         context = {"form": self}
-        table_html = render_to_string("attendance_form.html", context)
+        table_html = render_to_string("horilla_form.html", context)
         return table_html
 
     def save(self, commit: bool = ...):
@@ -1771,6 +1936,8 @@ class ResetPasswordForm(SetPasswordForm):
 excluded_fields = [
     "id",
     "is_active",
+    "reallocate_approved",
+    "reallocate_canceled",
     "shift_changed",
     "work_type_changed",
     "created_at",
@@ -1888,24 +2055,8 @@ class TagsForm(ModelForm):
         Render the form fields as HTML table rows with Bootstrap styling.
         """
         context = {"form": self}
-        table_html = render_to_string("attendance_form.html", context)
+        table_html = render_to_string("horilla_form.html", context)
         return table_html
-
-
-class EmployeeTagForm(ModelForm):
-    """
-    Employee Tags form
-    """
-
-    class Meta:
-        """
-        Meta class for additional options
-        """
-
-        model = EmployeeTag
-        fields = "__all__"
-        exclude = ["is_active"]
-        widgets = {"color": TextInput(attrs={"type": "color", "style": "height:50px"})}
 
 
 class AuditTagForm(ModelForm):
@@ -1968,7 +2119,7 @@ class DynamicMailConfForm(ModelForm):
         Render the form fields as HTML table rows with Bootstrap styling.
         """
         context = {"form": self}
-        table_html = render_to_string("attendance_form.html", context)
+        table_html = render_to_string("horilla_form.html", context)
         return table_html
 
 
@@ -1978,6 +2129,46 @@ class DynamicMailTestForm(forms.Form):
     """
 
     to_email = forms.EmailField(label="To email", required=True)
+
+
+class MailTemplateForm(ModelForm):
+    """
+    MailTemplateForm
+    """
+
+    class Meta:
+        model = HorillaMailTemplate
+        fields = "__all__"
+        widgets = {
+            "body": forms.Textarea(
+                attrs={"data-summernote": "", "style": "display:none;"}
+            ),
+        }
+
+    def get_template_language(self):
+        mail_data = {
+            "Receiver|Full name": "instance.get_full_name",
+            "Sender|Full name": "self.get_full_name",
+            "Receiver|Recruitment": "instance.recruitment_id",
+            "Sender|Recruitment": "self.recruitment_id",
+            "Receiver|Company": "instance.get_company",
+            "Sender|Company": "self.get_company",
+            "Receiver|Job position": "instance.get_job_position",
+            "Sender|Job position": "self.get_job_position",
+            "Receiver|Email": "instance.get_mail",
+            "Sender|Email": "self.get_mail",
+            "Receiver|Employee Type": "instance.get_employee_type",
+            "Sender|Employee Type": "self.get_employee_type",
+            "Receiver|Work Type": "instance.get_work_type",
+            "Sender|Work Type": "self.get_work_type",
+            "Candidate|Full name": "instance.get_full_name",
+            "Candidate|Recruitment": "instance.recruitment_id",
+            "Candidate|Company": "instance.get_company",
+            "Candidate|Job position": "instance.get_job_position",
+            "Candidate|Email": "instance.get_email",
+            "Candidate|Interview Table": "instance.get_interview|safe",
+        }
+        return mail_data
 
 
 class MultipleApproveConditionForm(ModelForm):
@@ -2237,47 +2428,56 @@ class PassWordResetForm(forms.Form):
             )
 
 
-class AttendanceAllowedIPForm(ModelForm):
-    ip_address = forms.CharField(max_length=30, label="IP Address")
+def validate_ip_or_cidr(value):
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        try:
+            ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            raise ValidationError(
+                f"{value} is not a valid IP address or CIDR notation."
+            )
+
+
+class AttendanceAllowedIPForm(forms.ModelForm):
+    ip_addresses = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 3, "class": "form-control w-100"}),
+        label="Allowed IP Addresses or Network Prefixes",
+        help_text="Enter multiple IP addresses or network prefixes, separated by commas.",
+    )
 
     class Meta:
         model = AttendanceAllowedIP
-        fields = ["ip_address"]
+        fields = ["ip_addresses"]
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def clean_ip_addresses(self):
+        ip_addresses = self.cleaned_data.get("ip_addresses", "").strip().split("\n")
+        cleaned_ips = []
+        for ip in ip_addresses:
+            ip = ip.strip().split(", ")
+            if ip:
+                for ip_addr in ip:
+                    validate_ip_or_cidr(ip_addr)
+                    cleaned_ips.append(ip_addr)
+        return cleaned_ips
 
-        ip_counts = 1
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        if instance.pk:
+            existing_ips = set(instance.additional_data.get("allowed_ips", []))
+            new_ips = set(self.cleaned_data["ip_addresses"])
+            merged_ips = list(existing_ips.union(new_ips))
+            instance.additional_data["allowed_ips"] = merged_ips
+        else:
+            instance.additional_data = {
+                "allowed_ips": self.cleaned_data["ip_addresses"]
+            }
 
-        def create_ip_field(ip_key, initial=None):
-            self.fields[ip_key] = forms.ModelChoiceField(
-                widget=forms.TextInput(
-                    attrs={
-                        "class": "oh-input w-100 mb-3",
-                        "name": ip_key,
-                        "id": f"id_{ip_key}",
-                    }
-                ),
-                required=False,
-                initial=initial,
-            )
+        if commit:
+            instance.save()
 
-        additional_data = self.initial.get("additional_data")
-        additional_ips = (
-            additional_data.get("additional_ips") if additional_data else None
-        )
-        if additional_ips:
-            ip_counts = 1
-            for ip_id in additional_ips:
-                if ip_id:
-                    create_ip_field(f"ip{ip_counts}", initial=ip_id)
-                    ip_counts += 1
-
-        self.ip_counts = ip_counts
-
-    def as_p(self, *args, **kwargs):
-        context = {"form": self}
-        return render_to_string("attendance/ip_restriction/restrict_form.html", context)
+        return instance
 
 
 class AttendanceAllowedIPUpdateForm(ModelForm):
@@ -2301,3 +2501,146 @@ class AttendanceAllowedIPUpdateForm(ModelForm):
             cleaned_data[field_name] = self.validate_ip_address(value)
 
         return cleaned_data
+
+
+class TrackLateComeEarlyOutForm(ModelForm):
+    class Meta:
+        model = TrackLateComeEarlyOut
+        fields = ["is_enable"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["is_enable"].widget.attrs.update(
+            {
+                "hx-post": "enable-disable-tracking-late-come-early-out",
+                "hx-target": "this",
+                "hx-trigger": "change",
+            }
+        )
+
+
+class HolidayForm(ModelForm):
+    """
+    Form for creating or updating a holiday.
+
+    This form allows users to create or update holiday data by specifying details such as
+    the start date and end date.
+
+    Attributes:
+        - start_date: A DateField representing the start date of the holiday.
+        - end_date: A DateField representing the end date of the holiday.
+    """
+
+    start_date = forms.DateField(
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    end_date = forms.DateField(
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+
+    def clean_end_date(self):
+        start_date = self.cleaned_data.get("start_date")
+        end_date = self.cleaned_data.get("end_date")
+
+        if start_date and end_date and end_date < start_date:
+            raise ValidationError(
+                _("End date should not be earlier than the start date.")
+            )
+
+        return end_date
+
+    class Meta:
+        """
+        Meta class for additional options
+        """
+
+        model = Holidays
+        fields = "__all__"
+        exclude = ["is_active"]
+        labels = {
+            "name": _("Name"),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super(HolidayForm, self).__init__(*args, **kwargs)
+        self.fields["name"].widget.attrs["autocomplete"] = "name"
+
+
+class HolidaysColumnExportForm(forms.Form):
+    """
+    Form for selecting columns to export in holiday data.
+
+    This form allows users to select specific columns from the Holidays model
+    for export. The available columns are dynamically generated based on the
+    model's meta information, excluding specified excluded_fields.
+
+    Attributes:
+        - model_fields: A list of fields in the Holidays model.
+        - field_choices: A list of field choices for the form, consisting of field names
+          and their verbose names, excluding specified excluded_fields.
+        - selected_fields: A MultipleChoiceField representing the selected columns
+          to be exported.
+    """
+
+    model_fields = Holidays._meta.get_fields()
+    field_choices = [
+        (field.name, field.verbose_name.capitalize())
+        for field in model_fields
+        if hasattr(field, "verbose_name") and field.name not in excluded_fields
+    ]
+    selected_fields = forms.MultipleChoiceField(
+        choices=field_choices,
+        widget=forms.CheckboxSelectMultiple,
+        initial=[
+            "name",
+            "start_date",
+            "end_date",
+            "recurring",
+        ],
+    )
+
+
+class CompanyLeaveForm(ModelForm):
+    """
+    Form for managing company leave data.
+
+    This form allows users to manage company leave data by including all fields from
+    the CompanyLeaves model except for is_active.
+
+    Attributes:
+        - Meta: Inner class defining metadata options.
+            - model: The model associated with the form (CompanyLeaves).
+            - fields: A special value indicating all fields should be included in the form.
+            - exclude: A list of fields to exclude from the form (is_active).
+    """
+
+    class Meta:
+        """
+        Meta class for additional options
+        """
+
+        model = CompanyLeaves
+        fields = "__all__"
+        exclude = ["is_active"]
+
+
+class PenaltyAccountForm(ModelForm):
+    """
+    PenaltyAccountForm
+    """
+
+    class Meta:
+        model = PenaltyAccounts
+        fields = "__all__"
+        exclude = ["is_active"]
+
+    def __init__(self, *args, **kwargs):
+        employee = kwargs.pop("employee", None)
+        super().__init__(*args, **kwargs)
+        if apps.is_installed("leave") and employee:
+            LeaveType = get_horilla_model_class(app_label="leave", model="leavetype")
+            available_leaves = employee.available_leave.all()
+            assigned_leave_types = LeaveType.objects.filter(
+                id__in=available_leaves.values_list("leave_type_id", flat=True)
+            )
+            self.fields["leave_type_id"].queryset = assigned_leave_types

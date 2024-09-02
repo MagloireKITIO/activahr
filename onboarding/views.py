@@ -40,7 +40,7 @@ from base.methods import (
     get_pagination,
     sortby,
 )
-from base.models import JobPosition
+from base.models import HorillaMailTemplate, JobPosition
 from employee.models import Employee, EmployeeBankDetails, EmployeeWorkInformation
 from horilla import settings
 from horilla.decorators import (
@@ -75,12 +75,7 @@ from onboarding.models import (
 )
 from recruitment.filters import CandidateFilter, CandidateReGroup, RecruitmentFilter
 from recruitment.forms import RejectedCandidateForm
-from recruitment.models import (
-    Candidate,
-    Recruitment,
-    RecruitmentMailTemplate,
-    RejectedCandidate,
-)
+from recruitment.models import Candidate, Recruitment, RejectedCandidate
 from recruitment.pipeline_grouper import group_by_queryset
 
 
@@ -104,6 +99,10 @@ def stage_creation(request, obj_id):
         recruitment = Recruitment.objects.get(id=obj_id)
         form = OnboardingViewStageForm(request.POST)
         if form.is_valid():
+            stage_obj = form.save()
+            stage_obj.employee_id.set(
+                Employee.objects.filter(id__in=form.data.getlist("employee_id"))
+            )
             return stage_save(form, recruitment, request, obj_id)
     return render(request, "onboarding/stage_form.html", {"form": form, "id": obj_id})
 
@@ -166,6 +165,9 @@ def stage_update(request, stage_id, recruitment_id):
         form = OnboardingViewStageForm(request.POST, instance=onboarding_stage)
         if form.is_valid():
             stage = form.save()
+            stage.employee_id.set(
+                Employee.objects.filter(id__in=form.data.getlist("employee_id"))
+            )
             messages.info(request, _("Stage is updated successfully.."))
             users = [employee.employee_user_id for employee in stage.employee_id.all()]
             notify.send(
@@ -309,6 +311,9 @@ def task_update(
         form = OnboardingTaskForm(request.POST, instance=onboarding_task)
         if form.is_valid():
             task = form.save()
+            task.employee_id.set(
+                Employee.objects.filter(id__in=form.data.getlist("employee_id"))
+            )
             for cand_task in onboarding_task.candidatetask_set.all():
                 if cand_task.candidate_id not in task.candidates.all():
                     cand_task.delete()
@@ -549,7 +554,7 @@ def candidates_view(request):
     previous_data = request.GET.urlencode()
     page_number = request.GET.get("page")
     page_obj = paginator_qry(candidate_filter_obj.qs, page_number)
-    mail_templates = RecruitmentMailTemplate.objects.all()
+    mail_templates = HorillaMailTemplate.objects.all()
     data_dict = parse_qs(previous_data)
     get_key_instances(Candidate, data_dict)
     return render(
@@ -646,13 +651,13 @@ def email_send(request):
     template_attachment_ids = request.POST.getlist("template_attachment_ids")
     email_backend = ConfiguredEmailBackend()
     if not candidates:
-        messages.info(request, "Please choose chandidates")
+        messages.info(request, "Please choose candidates")
         return HttpResponse("<script>window.location.reload()</script>")
 
     bodys = list(
-        RecruitmentMailTemplate.objects.filter(
-            id__in=template_attachment_ids
-        ).values_list("body", flat=True)
+        HorillaMailTemplate.objects.filter(id__in=template_attachment_ids).values_list(
+            "body", flat=True
+        )
     )
 
     attachments_other = []
@@ -1398,42 +1403,6 @@ def candidate_task_bulk_update(request):
 
     return JsonResponse(
         {"message": _("Candidate onboarding stage updated"), "type": "success"}
-    )
-
-
-@login_required
-def hired_candidate_chart(request):
-    """
-    function used to show hired candidates in all recruitments.
-
-    Parameters:
-    request (HttpRequest): The HTTP request object.
-
-    Returns:
-    GET : return Json response labels, data, background_color, border_color.
-    """
-    labels = []
-    data = []
-    background_color = []
-    border_color = []
-    recruitments = Recruitment.objects.filter(closed=False, is_active=True)
-    for recruitment in recruitments:
-        red = random.randint(0, 255)
-        green = random.randint(0, 255)
-        blue = random.randint(0, 255)
-        background_color.append(f"rgba({red}, {green}, {blue}, 0.2")
-        border_color.append(f"rgb({red}, {green}, {blue})")
-        labels.append(f"{recruitment}")
-        data.append(recruitment.candidate.filter(hired=True).count())
-    return JsonResponse(
-        {
-            "labels": labels,
-            "data": data,
-            "background_color": background_color,
-            "border_color": border_color,
-            "message": _("No data Found..."),
-        },
-        safe=False,
     )
 
 

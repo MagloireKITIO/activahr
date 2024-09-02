@@ -1,4 +1,5 @@
 {% load i18n %} {% load basefilters %}
+<br>
 <style>
   .oh-sticky-table-container {
     max-width: 2000px;
@@ -29,6 +30,7 @@
   }
   .oh-kanban-card {
     min-width: 350px;
+    border-radius:10px;
     flex-basis: calc(17% - 15px);
   }
   .oh-sticky-table-container + .oh-sticky-table-request {
@@ -69,7 +71,7 @@
 {% endif %}  -->
 {% if user_leaves %}
 <!-- Profile leave type card -->
-<div class="oh-sticky-table-container mt-2">
+<div class="oh-sticky-table-container">
   <div class="oh-sticky-table">
     <div class="kanban-card-container">
       <!-- Container for Kanban cards -->
@@ -105,7 +107,7 @@
               >
               <span class="oh-kanban-card__subtitle"
                 >{% trans "Available Leave Days" %} :
-                {{user_leave.available_days}}</span
+                {% if user_leave.leave_type_id.limit_leave %}{{user_leave.available_days}}{% else %}{% trans "No Limit" %}{% endif %}</span
               ><br />
               <span class="oh-kanban-card__subtitle"
                 >{% trans "Carryforward Leave Days" %} :
@@ -113,7 +115,7 @@
               ><br />
               <span class="oh-kanban-card__subtitle"
                 >{% trans "Total Leave Days" %} :
-                {{user_leave.total_leave_days}}</span
+                {% if user_leave.leave_type_id.limit_leave %}{{user_leave.total_leave_days}}{% else %}{% trans "No Limit" %}{% endif %}</span
               >
             </div>
           </div>
@@ -124,7 +126,7 @@
 </div>
 {% elif employee_leaves %}
 <!-- Employe leave type card -->
-<div class="oh-sticky-table-container mt-2">
+<div class="oh-sticky-table-container">
   <div class="oh-sticky-table">
     <div class="kanban-card-container">
       <!-- Container for Kanban cards -->

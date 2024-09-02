@@ -1,4 +1,4 @@
-{% load i18n %} {% load static %}{% include "filter_tags.html" %}
+{% load i18n %} {% load static horillafilters %}{% include "filter_tags.html" %}
 <div class="d-flex flex-row-reverse oh-wrapper">
     <span
         class="mb-3"
@@ -41,10 +41,11 @@
         <li class="oh-tabs__tab" data-target="#reimbursement_tab">
             {% trans "Reimbursements" %}
         </li>
-        <!-- normal user can't view all objective  -->
+        {% if "leave"|app_installed %}
         <li class="oh-tabs__tab" data-target="#leave_encashment_tab">
             {% trans "Leave Encashments" %}
         </li>
+        {% endif %}
         <li class="oh-tabs__tab" data-target="#bonus_encashment_tab">
             {% trans "Bonus Encashments" %}
         </li>
@@ -59,9 +60,9 @@
                         <div class="oh-faq-card" id="requestCard{{ req.id }}">
                             <div class="d-flex justify-content-between">
                                 <div style="margin-bottom: 10px">
-                                    <div class="loan-type" style="display: inline; background:hsl(58.85deg 100% 80.93%);">
+                                    {% comment %} <div class="loan-type" style="display: inline; background:hsl(58.85deg 100% 80.93%);">
                                         {{ req.get_type_display }}
-                                    </div>
+                                    </div> {% endcomment %}
                                     <div class="loan-type"
                                         style="display: inline;
                                         {% if req.status == "approved" %}background:#9acd3245; {% elif req.status == "rejected" %}
@@ -346,9 +347,9 @@
                         <div class="oh-faq-card" id="requestCard{{ req.id }}">
                             <div class="d-flex justify-content-between">
                                 <div style="margin-bottom: 10px">
-                                    <div class="loan-type" style="display: inline; background:hsl(58.85deg 100% 80.93%);">
+                                    {% comment %} <div class="loan-type" style="display: inline; background:hsl(58.85deg 100% 80.93%);">
                                         {{ req.get_type_display }}
-                                    </div>
+                                    </div> {% endcomment %}
                                     <div class="loan-type"
                                         style="display: inline;
                                         {% if req.status == "approved" %}background:#9acd3245; {% elif req.status == "rejected" %}
@@ -629,9 +630,9 @@
                         <div class="oh-faq-card" id="requestCard{{ req.id }}">
                             <div class="d-flex justify-content-between">
                                 <div style="margin-bottom: 10px">
-                                    <div class="loan-type" style="display: inline; background:hsl(58.85deg 100% 80.93%);">
+                                    {% comment %} <div class="loan-type" style="display: inline; background:hsl(58.85deg 100% 80.93%);">
                                         {{ req.get_type_display }}
-                                    </div>
+                                    </div> {% endcomment %}
                                     <div class="loan-type"
                                         style="display: inline;
                                         {% if req.status == "approved" %}background:#9acd3245; {% elif req.status == "rejected" %}

@@ -15,7 +15,7 @@ from django.contrib.auth.models import Group, Permission
 from django.utils.translation import gettext as _
 from django_filters import CharFilter, DateFilter
 
-from attendance.models import Attendance
+# from attendance.models import Attendance
 from base.methods import reload_queryset
 from base.models import WorkType
 from employee.models import DisciplinaryAction, Employee, Policy
@@ -171,11 +171,12 @@ class EmployeeFilter(FilterSet):
         today = datetime.datetime.now().date()
         yesterday = today - datetime.timedelta(days=1)
 
-        working_employees = Attendance.objects.filter(
-            attendance_date__gte=yesterday,
-            attendance_date__lte=today,
-            attendance_clock_out_date__isnull=True,
-        ).values_list("employee_id", flat=True)
+        # working_employees = Attendance.objects.filter(
+        #     attendance_date__gte=yesterday,
+        #     attendance_date__lte=today,
+        #     attendance_clock_out_date__isnull=True,
+        # ).values_list("employee_id", flat=True)
+        working_employees = []
         if value:
             queryset = queryset.filter(id__in=working_employees)
         else:

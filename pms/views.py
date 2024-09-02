@@ -10,6 +10,7 @@ import json
 from itertools import tee
 from urllib.parse import parse_qs
 
+from django import forms
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.core.paginator import Paginator
@@ -29,9 +30,12 @@ from horilla.decorators import (
     login_required,
     manager_can_enter,
     meeting_manager_can_enter,
+    owner_can_enter,
     permission_required,
 )
 from horilla.group_by import group_by_queryset
+from horilla_automations.methods.methods import generate_choices
+from horilla_automations.methods.serialize import serialize_form
 from notifications.signals import notify
 from pms.filters import (
     ActualKeyResultFilter,
@@ -43,11 +47,32 @@ from pms.filters import (
     ObjectiveFilter,
     ObjectiveReGroup,
 )
-from pms.methods import pms_manager_can_enter, pms_owner_and_manager_can_enter
+from pms.forms import (
+    AddAssigneesForm,
+    AnonymousFeedbackForm,
+    EmployeeKeyResultForm,
+    EmployeeObjectiveCreateForm,
+    EmployeeObjectiveForm,
+    FeedbackForm,
+    KeyResultForm,
+    KRForm,
+    MeetingsForm,
+    ObjectiveCommentForm,
+    ObjectiveForm,
+    PeriodForm,
+    QuestionForm,
+    QuestionTemplateForm,
+)
+from pms.methods import (
+    check_permission_feedback_detailed_view,
+    pms_owner_and_manager_can_enter,
+)
 from pms.models import (
     AnonymousFeedback,
     Answer,
+    BonusPointSetting,
     Comment,
+    EmployeeBonusPoint,
     EmployeeKeyResult,
     EmployeeObjective,
     Feedback,
@@ -60,22 +85,6 @@ from pms.models import (
     Question,
     QuestionOptions,
     QuestionTemplate,
-)
-
-from .forms import (
-    AddAssigneesForm,
-    AnonymousFeedbackForm,
-    EmployeeKeyResultForm,
-    EmployeeObjectiveForm,
-    FeedbackForm,
-    KeyResultForm,
-    KRForm,
-    MeetingsForm,
-    ObjectiveCommentForm,
-    ObjectiveForm,
-    PeriodForm,
-    QuestionForm,
-    QuestionTemplateForm,
 )
 
 
@@ -173,7 +182,6 @@ def objective_creation(request):
     """
     employee = request.user.employee_get
     objective_form = ObjectiveForm(employee=employee)
-
     if request.GET.get("key_result_id") is not None:
         objective_form = ObjectiveForm(request.GET)
 
@@ -332,6 +340,7 @@ def key_result_create(request):
     """
     form = KRForm()
     redirect_url = request.GET.get("data")
+    dataUrl = request.GET.get("dataUrl")
     if request.method == "POST":
         form = KRForm(request.POST)
         if form.is_valid():
@@ -348,15 +357,14 @@ def key_result_create(request):
                 key_result_ids.remove("create_new_key_result")
             key_result_ids.append(str(instance.id))
             mutable_get.setlist("key_result_id", key_result_ids)
-
-            redirect_url = f"/pms/objective-creation/?data={mutable_get.urlencode()}"
+            redirect_url = f"/pms/{dataUrl}{mutable_get.urlencode()}"
         else:
             redirect_url = request.GET.urlencode()
 
     return render(
         request,
         "okr/key_result/key_result_form.html",
-        {"k_form": form, "redirect_url": redirect_url},
+        {"k_form": form, "redirect_url": redirect_url, "dataUrl": dataUrl},
     )
 
 
@@ -1064,6 +1072,53 @@ def view_employee_objective(request, emp_obj_id):
 @login_required
 @hx_request_required
 @manager_can_enter(perm="pms.add_employeeobjective")
+def create_employee_objective(request):
+    """
+    This function is used to create the employee objective
+        args:
+            emp_obj_id(int) : pimarykey of EmployeeObjective
+        return:
+            redirect to form of employee objective
+    """
+    form = EmployeeObjectiveCreateForm()
+    if request.GET.get("data"):
+        form = EmployeeObjectiveCreateForm(request.GET)
+    if request.method == "POST":
+        form = EmployeeObjectiveCreateForm(request.POST)
+        if form.is_valid():
+            # get key result on form
+            krs = list(form.cleaned_data["key_result_id"])
+            emp_obj = form.save(commit=False)
+            obj = emp_obj.objective_id
+            # Add this employee as assignee
+            obj.assignees.add(emp_obj.employee_id)
+            krs.extend([key_result for key_result in obj.key_result_id.all()])
+            set_krs = set(krs)
+            emp_obj.save()
+            # Add all key results
+            for kr in set_krs:
+                emp_obj.key_result_id.add(kr)
+                if not EmployeeKeyResult.objects.filter(
+                    employee_objective_id=emp_obj, key_result_id=kr
+                ).exists():
+                    emp_kr = EmployeeKeyResult.objects.create(
+                        employee_objective_id=emp_obj,
+                        key_result_id=kr,
+                        progress_type=kr.progress_type,
+                        target_value=kr.target_value,
+                    )
+                    emp_kr.save()
+            messages.success(request, _("Employee objective Updated successfully"))
+            return HttpResponse("<script>window.location.reload()</script>")
+    context = {"form": form, "k_form": KRForm(), "emp_obj": True}
+    return render(
+        request, "okr/emp_objective/emp_objective_create_form.html", context=context
+    )
+
+
+@login_required
+@hx_request_required
+@manager_can_enter(perm="pms.change_employeeobjective")
 def update_employee_objective(request, emp_obj_id):
     """
     This function is used to update the employee objective
@@ -1076,7 +1131,7 @@ def update_employee_objective(request, emp_obj_id):
     form = EmployeeObjectiveForm(instance=emp_objective)
     if request.method == "POST":
         form = EmployeeObjectiveForm(request.POST, instance=emp_objective)
-        if form.is_valid:
+        if form.is_valid():
             emp_obj = form.save(commit=False)
             emp_obj.save()
             messages.success(request, _("Employee objective Updated successfully"))
@@ -1528,6 +1583,16 @@ def feedback_update(request, id):
     if request.method == "POST":
         form = FeedbackForm(request.POST, instance=feedback)
         if form.is_valid():
+            employees = form.data.getlist("subordinate_id")
+            if key_result_ids := request.POST.getlist("employee_key_results_id"):
+                for key_result_id in key_result_ids:
+                    key_result = EmployeeKeyResult.objects.filter(
+                        id=key_result_id
+                    ).first()
+                    feedback_form = form.save()
+                    feedback_form.employee_key_results_id.add(key_result)
+            instance = form.save()
+            instance.subordinate_id.set(employees)
             form = form.save()
             messages.info(request, _("Feedback updated successfully!."))
             send_feedback_notifications(request, form)
@@ -1723,17 +1788,30 @@ def feedback_detailed_view(request, id, **kwargs):
         it will return the feedback object to feedback_detailed_view template .
     """
     feedback = Feedback.objects.get(id=id)
-    feedback_started = Answer.objects.filter(feedback_id=id)
-    current_date = datetime.datetime.now()
-    context = {
-        "feedback": feedback,
-        "feedback_started": feedback_started,
-        "feedback_status": Feedback.STATUS_CHOICES,
-        "current_date": current_date,
-    }
-    return render(request, "feedback/feedback_detailed_view.html", context)
+    is_have_perm = check_permission_feedback_detailed_view(
+        request, feedback, "pms.view_Feedback"
+    )
+    if is_have_perm:
+        feedback_started = Answer.objects.filter(feedback_id=id)
+        current_date = datetime.datetime.now()
+        context = {
+            "feedback": feedback,
+            "feedback_started": feedback_started,
+            "feedback_status": Feedback.STATUS_CHOICES,
+            "current_date": current_date,
+        }
+        return render(request, "feedback/feedback_detailed_view.html", context)
+    else:
+        messages.info(request, "You dont have permission.")
+        previous_url = request.META.get("HTTP_REFERER", "/")
+        script = f'<script>window.location.href = "{previous_url}"</script>'
+        key = "HTTP_HX_REQUEST"
+        if key in request.META.keys():
+            return render(request, "decorator_404.html")
+        return HttpResponse(script)
 
 
+@login_required
 def feedback_detailed_view_answer(request, id, emp_id):
     """
     This view is used show  answer ,
@@ -1745,11 +1823,23 @@ def feedback_detailed_view_answer(request, id, emp_id):
     """
     employee = Employee.objects.filter(id=emp_id).first()
     feedback = Feedback.objects.filter(id=id).first()
-    answers = Answer.objects.filter(employee_id=employee, feedback_id=feedback)
-    context = {
-        "answers": answers,
-    }
-    return render(request, "feedback/feedback_detailed_view_answer.html", context)
+    is_have_perm = check_permission_feedback_detailed_view(
+        request, feedback, "pms.view_Feedback"
+    )
+    if is_have_perm:
+        answers = Answer.objects.filter(employee_id=employee, feedback_id=feedback)
+        context = {
+            "answers": answers,
+        }
+        return render(request, "feedback/feedback_detailed_view_answer.html", context)
+    else:
+        messages.info(request, "You dont have permission.")
+        previous_url = request.META.get("HTTP_REFERER", "/")
+        script = f'<script>window.location.href = "{previous_url}"</script>'
+        key = "HTTP_HX_REQUEST"
+        if key in request.META.keys():
+            return render(request, "decorator_404.html")
+        return HttpResponse(script)
 
 
 @login_required
@@ -2162,11 +2252,12 @@ def question_delete(request, id):
 @manager_can_enter(perm="pms.add_questiontemplate")
 def question_template_creation(request):
     """
-    This view is used to  create   question template object.
+    This view is used to create a question template object.
     Args:
     Returns:
-        it will redirect to  question_template_detailed_view.
+        It will redirect to question_template_detailed_view.
     """
+    form = QuestionTemplateForm()
     if request.method == "POST":
         form = QuestionTemplateForm(request.POST)
         if form.is_valid():
@@ -3447,3 +3538,105 @@ def meeting_single_view(request, id):
         context["previous"] = previous_id
         context["next"] = next_id
     return render(request, "meetings/meeting_single_view.html", context)
+
+
+@login_required
+@hx_request_required
+@owner_can_enter("pms.view_feedback", Employee)
+def performance_tab(request, emp_id):
+    """
+    This function is used to view performance tab of an employee in employee individual
+    & profile view.
+
+    Parameters:
+    request (HttpRequest): The HTTP request object.
+    emp_id (int): The id of the employee.
+
+    Returns: return performance-tab template
+
+    """
+    feedback_own = Feedback.objects.filter(employee_id=emp_id, archive=False)
+
+    today = datetime.datetime.today()
+    context = {
+        "self_feedback": feedback_own,
+        "current_date": today,
+    }
+    return render(request, "tabs/performance-tab.html", context=context)
+
+
+@login_required
+def dashboard_feedback_answer(request):
+    employee = request.user.employee_get
+    feedback_requested = Feedback.objects.filter(
+        Q(manager_id=employee, manager_id__is_active=True)
+        | Q(colleague_id=employee, colleague_id__is_active=True)
+        | Q(subordinate_id=employee, subordinate_id__is_active=True)
+    ).distinct()
+    feedbacks = feedback_requested.exclude(feedback_answer__employee_id=employee)
+
+    return render(
+        request,
+        "request_and_approve/feedback_answer.html",
+        {"feedbacks": feedbacks, "current_date": datetime.date.today()},
+    )
+
+
+@login_required
+@permission_required("pms.delete_bonuspointsetting")
+def delete_bonus_point_setting(request, pk):
+    """
+    Delete bonus point setting
+    """
+    try:
+        BonusPointSetting.objects.get(id=pk).delete()
+        messages.success(request, "Bonus Point Setting deleted")
+    except Exception as e:
+        print(e)
+        messages.error(request, "Something went wrong")
+    return redirect(reverse("bonus-point-setting-list-view"))
+
+
+@login_required
+@permission_required("pms.delete_employeebonuspoint")
+def delete_employee_bonus_point(request, pk):
+    """
+    Automation delete view
+    """
+    try:
+        bonus = EmployeeBonusPoint.objects.get(id=pk)
+        bonus.delete()
+        messages.success(request, _(f"{bonus} deleted"))
+    except Exception as e:
+        print(e)
+        messages.error(request, _("Something went wrong"))
+    return redirect(reverse("employee-bonus-point-list-view"))
+
+
+@login_required
+def bonus_setting_form_values(request):
+    model = request.GET["model"]
+    """
+    This method is to render `mail to` fields
+    """
+    model_path = request.GET["model"]
+    to_fields, mail_details_choice, model_class = generate_choices(model_path)
+
+    class InstantModelForm(forms.ModelForm):
+        """
+        InstantModelForm
+        """
+
+        class Meta:
+            model = model_class
+            fields = "__all__"
+
+    serialized_form = serialize_form(InstantModelForm(), "automation_multiple_")
+
+    return JsonResponse(
+        {
+            "choices": to_fields,
+            "mail_details_choice": mail_details_choice,
+            "serialized_form": serialized_form,
+        }
+    )
