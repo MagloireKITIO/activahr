@@ -168,7 +168,7 @@ def stage_update(request, stage_id, recruitment_id):
             stage.employee_id.set(
                 Employee.objects.filter(id__in=form.data.getlist("employee_id"))
             )
-            messages.info(request, _("Stage is updated successfully.."))
+            messages.success(request, _("Stage is updated successfully.."))
             users = [employee.employee_user_id for employee in stage.employee_id.all()]
             notify.send(
                 request.user.employee_get,
@@ -319,7 +319,7 @@ def task_update(
                     cand_task.delete()
                 else:
                     cand_task.stage_id = task.stage_id
-            messages.info(request, _("Task updated successfully.."))
+            messages.success(request, _("Task updated successfully.."))
             users = [employee.employee_user_id for employee in task.employee_id.all()]
             notify.send(
                 request.user.employee_get,
@@ -429,7 +429,7 @@ def candidate_update(request, obj_id):
         form = OnboardingCandidateForm(request.POST, request.FILES, instance=candidate)
         if form.is_valid():
             form.save()
-            messages.info(request, _("Candidate detail is updated successfully.."))
+            messages.success(request, _("Candidate detail is updated successfully.."))
             return redirect(candidates_view)
     return render(request, "onboarding/candidate_update.html", {"form": form})
 
@@ -1779,3 +1779,42 @@ def candidate_select_filter(request):
         context = {"employee_ids": employee_ids, "total_count": total_count}
 
         return JsonResponse(context)
+
+
+def offer_letter_bulk_status_update(request):
+    """
+    This function is used to bulk update the offerletter status
+    """
+    ids = json.loads(request.GET.get("ids", []))
+    status = request.GET.get("status")
+    for id in ids:
+        try:
+            candidate = Candidate.objects.filter(id=int(id)).first()
+            if candidate.offer_letter_status != status:
+                candidate.offer_letter_status = status
+                candidate.save()
+                messages.success(request, "offer letter status updated successfully")
+            else:
+                messages.error(request, "Status already in {} status".format(status))
+        except:
+            messages.error(request, "Candidate doesnot exist")
+
+    return JsonResponse("success", safe=False)
+
+
+def onboarding_candidate_bulk_delete(request):
+    """
+    This function is used to bulk delete onboarding candidates
+    """
+
+    ids = json.loads(request.GET.get("ids", []))
+    status = request.GET.get("status")
+    for id in ids:
+        try:
+            candidate = Candidate.objects.filter(id=int(id)).first()
+            candidate.delete()
+            messages.success(request, "candidate deleted successfully")
+        except:
+            messages.error(request, "Candidate doesnot exist")
+
+    return JsonResponse("success", safe=False)
