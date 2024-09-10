@@ -215,7 +215,7 @@
 								>
 							</li>
 
-							<li data-cell-index="19" data-cell-title="{% trans 'Work type & Shift' %}" class="oh-general__tab">
+							<!-- <li data-cell-index="19" data-cell-title="{% trans 'Work type & Shift' %}" class="oh-general__tab">
 								<a
 								hx-get="{% url 'shift-tab' employee.id %}?profile=true"
 								hx-target="#shift_target"
@@ -225,9 +225,9 @@
 								role="button"
 								>{% trans "Work Type & Shift" %}</a
 								>
-							</li>
+							</li> -->
 
-							{% if "attendance"|app_installed %}
+							<!-- {% if "attendance"|app_installed %}
 								<li data-cell-index="18" data-cell-title="{% trans 'Attendance' %}" class="oh-general__tab">
 									<a
 									hx-get="{% url 'profile-attendance-tab' %}"
@@ -240,9 +240,9 @@
 									>{% trans "Attendance" %}</a
 									>
 								</li>
-							{% endif %}
+							{% endif %} -->
 
-							{% if "leave"|app_installed %}
+							<!-- {% if "leave"|app_installed %}
                 				{% if perms.leave.view_leaverequest or request.user|check_manager:employee or request.user == employee.employee_user_id %}
                 				  <li data-cell-index="12" data-cell-title="{% trans 'Leave' %}" class="oh-general__tab">
                 				    <a
@@ -256,9 +256,9 @@
                 				    >
                 				  </li>
                 				{% endif %}
-              				{% endif %}
+              				{% endif %} -->
 
-							{% if "payroll"|app_installed %}
+							<!-- {% if "payroll"|app_installed %}
 								<li data-cell-index="16" data-cell-title="{% trans 'Payroll' %}" class="oh-general__tab">
 									<a
 									href="#"
@@ -268,9 +268,9 @@
 									>{% trans "Payroll" %}</a
 									>
 								</li>
-							{% endif %}
+							{% endif %} -->
 
-							{% if "payroll"|app_installed %}
+							<!-- {% if "payroll"|app_installed %}
 								<li data-cell-index="15" data-cell-title="{% trans 'Allowance & Deduction' %}" class="oh-general__tab">
 									<a
 									hx-get="{% url 'allowances-deductions-tab' employee.id %}"
@@ -282,9 +282,9 @@
 									>{% trans "Allowance & Deduction" %}</a
 									>
 								</li>
-							{% endif %}
+							{% endif %} -->
 
-							{% if "attendance"|app_installed %}
+							<!-- {% if "attendance"|app_installed %}
 							<li data-cell-index="14" data-cell-title="{% trans "Penalty Account" %}" class="oh-general__tab">
 								<a
 								data-action="general-tab"
@@ -295,9 +295,9 @@
 								>{% trans "Penalty Account" %}</a
 								>
 							</li>
-							{% endif %}
+							{% endif %} -->
 
-							{% if "asset"|app_installed %}
+							<!-- {% if "asset"|app_installed %}
 								<li data-cell-index="13" data-cell-title="{% trans 'Assets' %}" class="oh-general__tab">
 									<a
 									hx-get="{% url 'profile-asset-tab' employee.id %}"
@@ -310,9 +310,9 @@
 									>{% trans "Assets" %}</a
 									>
 								</li>
-							{% endif %}
+							{% endif %} -->
 
-							{% if "pms"|app_installed %}
+							<!-- {% if "pms"|app_installed %}
 							<li data-cell-index="12" data-cell-title="{% trans 'Performance' %}" class="oh-general__tab">
 								<a
 								hx-get="{% url 'performance-tab' employee.id %}"
@@ -325,7 +325,7 @@
 								>{% trans "Performance" %}</a
 								>
 							</li>
-							{% endif %}
+							{% endif %} -->
 
 							<li data-cell-index="11" data-cell-title="{% trans 'Documents' %}" class="oh-general__tab">
 								<a
@@ -339,7 +339,7 @@
 								>
 							</li>
 
-							{% if "payroll"|app_installed %}
+							<!-- {% if "payroll"|app_installed %}
 							<li data-cell-index="10" data-cell-title="{% trans 'Bonus Points' %}" class="oh-general__tab">
 								<a
 								hx-get="{% url 'bonus-points-tab' employee.id %}"
@@ -351,7 +351,7 @@
 								>{% trans "Bonus Points" %}</a
 								>
 							</li>
-							{% endif %}
+							{% endif %} -->
 
 							{% if "recruitment"|app_installed %}
 								<li data-cell-index="20" data-cell-title="{% trans "Interview" %}" class="oh-general__tab">
@@ -365,7 +365,7 @@
 								</li>
 							{% endif %}
 
-							{% if "offboarding"|app_installed and enabled_resignation_request %}
+							<!-- {% if "offboarding"|app_installed and enabled_resignation_request %}
 							<li data-cell-index="09" data-cell-title="{% trans 'Resignation' %}" class="oh-general__tab">
 								<a
 								hx-get="{% url 'search-resignation-request' %}?employee_id={{employee.id}}"
@@ -377,23 +377,23 @@
 								>{% trans "Resignation" %}</a
 								>
 							</li>
-							{% endif %}
+							{% endif %} -->
 
 						</ul>
 
 						<div class="oh-general__tab-target oh-profile__info-tab mb-4" id="personal_target" > </div>
 
-						{% if "attendance"|app_installed %}
+						<!-- {% if "attendance"|app_installed %}
 							<div class="oh-general__tab-target oh-profile__info-tab mb-4" id="penaltyTarget">
 								{% include 'tabs/penalty_account.html' %}
 							</div>
-						{% endif %}
+						{% endif %} -->
 
-						{% if "payroll"|app_installed %}
+						<!-- {% if "payroll"|app_installed %}
 							<div class="oh-general__tab-target oh-profile__info-tab mb-4 d-none" id="payroll">
 								{% include 'tabs/payroll-tab.html' %}
 							</div>
-						{% endif %}
+						{% endif %} -->
 
 						{% if "recruitment"|app_installed %}
 							<div class="oh-general__tab-target oh-profile__info-tab mb-4 d-none" id="interview">
