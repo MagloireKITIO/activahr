@@ -56,26 +56,25 @@ x-data="{searchShow: false}"
         onkeyup="$('.filterButton')[0].click();"
       />
     </div>
+    
     <ul class="oh-view-types ml-2" style="margin-bottom: 0;" id="view-type">
-      <li class="oh-view-type candidate-view-type " data-view='list' >
-        <a
-          id = 'list'
-          class="oh-btn oh-btn--view {% if request.GET.view == 'list' %} oh-btn--view-active {% endif %}"
-          title ='{% trans "List" %}'
-          onclick="$('[name=view]').val('list');$('.filterButton')[0].click();"
-          ><ion-icon name="list-outline"></ion-icon
-        ></a>
+      <li class="oh-view-type candidate-view-type" data-view='list'>
+          <a
+              id='list'
+              class="oh-btn oh-btn--view {% if request.GET.view == 'list' or not request.GET.view %} oh-btn--view-active {% endif %}"
+              title='{% trans "List" %}'
+              onclick="$('[name=view]').val('list');$('.filterButton')[0].click();"
+          ><ion-icon name="list-outline"></ion-icon></a>
       </li>
       <li class="oh-view-type candidate-view-type" data-view='card'>
-        <a
-          id="card"
-          class="oh-btn oh-btn--view {% if request.GET.view != 'list' %} oh-btn--view-active {% endif %}"
-          title = '{% trans "Card" %}'
-          onclick="$('[name=view]').val('card');$('.filterButton')[0].click();"
-          ><ion-icon name="grid-outline"></ion-icon
-        ></a>
+          <a
+              id="card"
+              class="oh-btn oh-btn--view {% if request.GET.view == 'card' %} oh-btn--view-active {% endif %}"
+              title='{% trans "Card" %}'
+              onclick="$('[name=view]').val('card');$('.filterButton')[0].click();"
+          ><ion-icon name="grid-outline"></ion-icon></a>
       </li>
-    </ul>
+  </ul>
     <input type="hidden" name="view" id="filterView" value="">
     <div class="oh-main__titlebar-button-container">
       <div class="oh-dropdown" x-data="{open: false}">

@@ -12674,6 +12674,10 @@ msgstr "Demande et Allocation"
 msgid "Registration Success"
 msgstr "Candidature enregistrée avec succès"
 
+#: recrutement/template/pipeline/components/canditate_stage_component.html:87
+msgid "Stage bulk update"
+msgstr "Mise à jour en masse"
+
 #: recrutement/template/candidate/success.html:51
 msgid "Your details have been registered successfully.Feel free to close this window."
 msgstr "Vos informations ont été enregistrées avec succès.Vous pouvez fermer cette fenêtre."

@@ -2760,7 +2760,7 @@ def extract_info(pdf):
     extracted_info = {
         "full_name": "",
         "address": "",
-        "country": "",
+        "country": "Cameroon",
         "state": "",
         "phone_number": "",
         "dob": "",
