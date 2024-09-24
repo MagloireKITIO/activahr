@@ -52,11 +52,9 @@
   </div>
 
   <div id="section" hx-target="#section" hx-swap="innerHTML">
-    {% if view_type == 'list' %}
+    
       {% include 'candidate/candidate_list.html' %}
-    {% else %}
-      {% include 'candidate/candidate_card.html' %}
-    {% endif %}
+   
   </div>
 </div>
 
