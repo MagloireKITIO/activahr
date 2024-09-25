@@ -875,10 +875,10 @@ class SkillZoneCandidate(HorillaModel):
 
 class CandidateRating(HorillaModel):
     employee_id = models.ForeignKey(
-        Employee, on_delete=models.PROTECT, related_name="candidate_rating"
+        Employee, on_delete=models.CASCADE, related_name="candidate_rating"
     )
     candidate_id = models.ForeignKey(
-        Candidate, on_delete=models.PROTECT, related_name="candidate_rating"
+        Candidate, on_delete=models.CASCADE, related_name="candidate_rating"
     )
     rating = models.IntegerField(
         validators=[MinValueValidator(0), MaxValueValidator(5)]

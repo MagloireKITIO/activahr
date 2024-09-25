@@ -26,7 +26,7 @@
     <div class="oh-sticky-table__table oh-table__movable">
         <div class="oh-sticky-table__thead">
             <div class="oh-sticky-table__tr oh-table-config__tr">
-                <div class="oh-sticky-table__th" style="width: 50px;z-index: 12 !important;">
+                <div class="oh-sticky-table__th" style="width: 30px;z-index: 12 !important;">
                     <div class="centered-div">
                         <input type="checkbox"
                         onchange="
@@ -39,29 +39,36 @@
                             data-stage-id="{{stage.id}}" title="Select All" id="tick">
                     </div>
                 </div>
-                <div class="oh-sticky-table__th oh-table-config__th" style="width: 200px;z-index: 11;">
+                <div class="oh-sticky-table__th oh-table-config__th" style="width: 150px;z-index: 11;">
                     <span> {% trans "Candidate" %} </span>
                 </div>
 
-                <div class="oh-sticky-table__th oh-table-config__th" style="width: 135">
+                <!-- <div class="oh-sticky-table__th oh-table-config__th" style="width: 135">
                     <span> {% trans "Email" %}</span>
-                </div>
-                <div class="oh-sticky-table__th oh-table-config__th" style="width: 135px;">
+                </div> -->
+
+                <!-- <div class="oh-sticky-table__th oh-table-config__th" style="width: 135px;">
                     <span> {% trans "Job Position" %} </span>
-                </div>
-                <div class="oh-sticky-table__th oh-table-config__th" style="width: 135px;">
+                </div> -->
+
+                <!-- <div class="oh-sticky-table__th oh-table-config__th" style="width: 135px;">
                     <span> {% trans "Contact" %} </span>
-                </div>
-                <div class="oh-sticky-table__th oh-table-config__th" style="width: 155px;">
+                </div> -->
+
+                <div class="oh-sticky-table__th oh-table-config__th" style="width: 100px;">
                     <span> {% trans "Scheduled Interviews" %} </span>
                 </div>
-                {% if request.user|stage_manages:rec or perms.recruitment.change_candidate %}
+
+                <!-- {% if request.user|stage_manages:rec or perms.recruitment.change_candidate %}
                 <div class="oh-sticky-table__th oh-table-config__th" style="width: 135px;">
                     <span> {% trans "Rating" %} </span>
                 </div>
-                {% endif %}
-                <div class="oh-sticky-table__th oh-table-config__th">{% trans "Stage" %}</div>
-                <div class="oh-sticky-table__th oh-table-config__th" style="width: 225px;">
+                {% endif %} -->
+
+                <div class="oh-sticky-table__th oh-table-config__th" style="width: 100px;" >{% trans "Stage" %}</div>
+
+
+                <div class="oh-sticky-table__th oh-table-config__th" style="width: 130px;">
                     <select name="bulk_stage"
                     onchange="
                     if (this.value) {
@@ -146,7 +153,7 @@
                     </div>
                 </div>
 
-                <div class="oh-sticky-table__td oh-table-config__td" style="width: 200px">
+                <!-- <div class="oh-sticky-table__td oh-table-config__td" style="width: 200px">
                     <span title="{{cand.email}}">
                         {{cand.email|truncatechars:10}}
                     </span>
@@ -157,38 +164,33 @@
                         style="background-color:{% if cand.get_last_sent_mail.status == "sent" %}yellowgreen
                         {% else %}red{% endif %}"></span>
                     {% endif %}
-                </div>
-                <div class="oh-sticky-table__td oh-table-config__td">
+                </div> -->
+
+
+                <!-- <div class="oh-sticky-table__td oh-table-config__td">
                     <span title="{{cand.job_position_id}}">
                         {{cand.job_position_id|truncatechars:21}}
                     </span>
-                </div>
-                <div class="oh-sticky-table__td oh-table-config__td">
+                </div> -->
+
+                <!-- <div class="oh-sticky-table__td oh-table-config__td">
                     {{cand.mobile}}
-                </div>
+                </div> -->
 
                 <div class="oh-sticky-table__td oh-table-config__td">
                     {% trans "Interviews Scheduled" %} : {{cand.candidate_interview.count}}
                 </div>
 
-                {% if request.user|stage_manages:rec or perms.recruitment.add_candidaterating %}
+                <!-- {% if request.user|stage_manages:rec or perms.recruitment.add_candidaterating %}
                 <div onclick="event.stopPropagation()" class="oh-sticky-table__td oh-table-config__td"
                     onclick="event.stopPropagation()">
                     {% with request.user.employee_get.candidate_rating.all as candidate_ratings %}
                     {% if candidate_ratings|has_candidate_rating:cand %}
                     <form hx-swap="none" hx-post='{% url "update-candidate-rating" cand.id %}' method="post">
                         {% csrf_token %}
-                        <div class="d-block mb-0">
-                            <div class="oh-rate d-flex" onclick="$(this).parents().closest('form').find('button').click()">
-                                {% for i in "54321" %}
-                                <input type="radio" id="star{{i}}{{cand.id}}" name="rating" class="rating-radio"
-                                    value="{{i}}" {% if candidate_ratings|rating:cand == i %} checked {% endif %} />
-                                <label for="star{{i}}{{cand.id}}" title="{{i}} Stars"></label>
-                                {% endfor %}
-                            </div>
-                            <button type="submit" hidden="true"></button>
-                            <span id="rating-radio-error"></span>
-                        </div>
+
+                      
+
                     </form>
                     {% else %}
                     <form hx-swap="none" hx-post='{% url "create-candidate-rating" cand.id %}' method="post">
@@ -209,7 +211,7 @@
                     {% endif %}
                     {% endwith %}
                 </div>
-                {% endif %}
+                {% endif %} -->
                 <div onclick="event.stopPropagation()" class="oh-sticky-table__td oh-table-config__td">
                     <select
                         name="stage_id"
