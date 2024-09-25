@@ -375,6 +375,14 @@ class Candidate(HorillaModel):
             validate_pdf,
         ],
     )
+    # ajout motivation model
+    motivation = models.FileField(
+        upload_to="recruitment/motivation",
+        validators=[
+            validate_pdf,
+        ],
+        default="recruitment/motivation/default.pdf"  # Spécifiez le chemin vers un fichier PDF par défaut
+    )
     referral = models.ForeignKey(
         Employee,
         on_delete=models.CASCADE,
@@ -940,3 +948,19 @@ class Resume(models.Model):
 
     def __str__(self):
         return f"{self.recruitment_id} - Resume {self.pk}"
+    
+# ajout de class motivation
+class Motivation(models.Model):
+    file = models.FileField(
+        upload_to="recruitment/motivation",
+        validators=[
+            validate_pdf,
+        ],
+    )
+    recruitment_id = models.ForeignKey(
+        Recruitment, on_delete=models.CASCADE, related_name="motivation"
+    )
+    is_candidate = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.recruitment_id} - Motivation {self.pk}"

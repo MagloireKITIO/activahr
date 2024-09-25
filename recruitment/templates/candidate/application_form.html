@@ -200,28 +200,6 @@
                   </div>
                 </div>
               
-                <div class="col-sm-12 col-md-12 col-lg-6">
-                  <div class="oh-input-group">
-                      <label class="oh-label" for="resume">{% trans "Resume" %}</label> 
-                      {% if resume.file %}
-                          <p>Currently: <a href="{{ resume.file.url }}" target="_blank">{{ resume.file.name }}</a></p>
-                          <p>Change: </p>
-                          <input type="hidden" id="matching_resume" data-value="{{ resume.file.url }}" data-id="{{ resume.id }}" name="initial_resume" value="{{ resume.file.url }}">
-                      {% endif %}
-                      <input
-                          type="file"
-                          id="id_resume"
-                          name="resume"
-                          accept=".pdf"
-                          class="oh-input w-100 px-0"
-                      />
-                      {{ form.resume.errors }}
-                      
-                      <!-- Message concernant les fichiers PDF uniquement -->
-                      <span style="color: red; font-size: 9px;">* Seuls les CV au format PDF sont acceptés.</span>
-                  </div>
-              </div>
-              
                 <div class="col-sm-12 col-md-6 col-lg-6">
                   <div class="oh-input-group">
                     <label class="oh-label required-star" for="gender"
@@ -244,8 +222,55 @@
                     {{form.address.errors}}
                   </div>
                 </div>
+                
+                <div class="col-sm-12 col-md-12 col-lg-12">
+                  <div class="oh-input-group">
+                      <label class="oh-label" for="resume">{% trans "Import your resume" %}</label> 
+                      {% if resume.file %}
+                          <p>Currently: <a href="{{ resume.file.url }}" target="_blank">{{ resume.file.name }}</a></p>
+                          <p>Change: </p>
+                          <input type="hidden" id="matching_resume" data-value="{{ resume.file.url }}" data-id="{{ resume.id }}" name="initial_resume" value="{{ resume.file.url }}">
+                      {% endif %}
+                      <input
+                          type="file"
+                          id="id_resume"
+                          name="resume"
+                          accept=".pdf"
+                          class="oh-input w-100 px-0"
+                      />
+                      {{ form.resume.errors }}
+                      
+                      <!-- Message concernant les fichiers PDF uniquement -->
+                      <span style="color: red; font-size: 9px;">* Seuls les CV au format PDF sont acceptés.</span>
+                  </div>
+              </div>
+              
+              <div class="col-sm-12 col-md-12 col-lg-12">
+                  <div class="oh-input-group">
+                      <label class="oh-label" for="motivation">{% trans "Import your cover letter" %}</label> 
+                      {% if motivation.file %}
+                          <p>Currently: <a href="{{ motivation.file.url }}" target="_blank">{{ motivation.file.name }}</a></p>
+                          <p>Change: </p>
+                          <input type="hidden" id="matching_motivation" data-value="{{ motivation.file.url }}" data-id="{{ motivation.id }}" name="initial_motivation" value="{{ motivation.file.url }}">
+                      {% endif %}
+                      <input
+                          type="file"
+                          id="id_motivation"
+                          name="motivation"
+                          accept=".pdf"
+                          class="oh-input w-100 px-0"
+                      />
+                      {{ form.motivation.errors }}
+                      
+                      <!-- Message concernant les fichiers PDF uniquement -->
+                      <span style="color: red; font-size: 9px;">* Seuls les CV au format PDF sont acceptés.</span>
+                  </div>
+              </div>
+              
 
-                <!-- <div class="col-sm-12 col-md-6 col-lg-6">
+            
+              
+                 <!-- <div class="col-sm-12 col-md-6 col-lg-6">
                   <div class="oh-input-group">
                     <label class="oh-label required-star" for="id_country"
                       >{% trans "Country" %}</label
@@ -357,6 +382,11 @@
   {% if resume %}
     $("#resume").val(resume)
   {% endif %}
+
+  var motivation = "{{motivation.file.url}}"
+  {% if motivation %}
+    $("#motivation").val(motivation)
+  {% endif %} 
   var description = `{{form.instance.recruitment_id.description|safe}}`
   var formattedDescription = description.replace(/\n/g, "<br>");
   $("#recruitmentInfoBody").html(formattedDescription);

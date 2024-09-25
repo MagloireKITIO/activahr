@@ -561,6 +561,14 @@ urlpatterns = [
         views.delete_resume_file,
         name="delete-resume-file",
     ),
+    
+    # # ajout motivation 
+    # path(
+    #     "delete-motivation-file/",
+    #     views.delete_motivation_file,
+    #     name="delete-motivation-file",
+    # ),
+
     path(
         "matching-resumes/<int:rec_id>",
         views.matching_resumes,

@@ -67,6 +67,9 @@
             <div data-cell-index="1" data-cell-title='{% trans "Recruitment" %}' class="oh-sticky-table__th">{% trans "Recruitment" %}</div>
             <div data-cell-index="2" data-cell-title='{% trans "Job Position" %}' class="oh-sticky-table__th">{% trans "Job Position" %}</div>
             <div data-cell-index="3" data-cell-title='{% trans "Resume" %}' class="oh-sticky-table__th">{% trans "Resume" %}</div>
+
+            <div data-cell-index="4" data-cell-title='motivation' class="oh-sticky-table__th">Motivation</div>
+
             <div class="oh-sticky-table__th" style="width: 230px;">{% trans "Options" %}</div>
             <div class="oh-sticky-table__th oh-sticky-table__right"  style="width: 190px;">{% trans "Actions" %}</div>
           </div>
@@ -128,12 +131,25 @@
                     style="text-decoration: none"
                     class="oh-btn oh-btn--light"
                     href="javascript:void(0);"
-                    onclick="document.getElementById('cvViewer').src='{{ cand.resume.url }}';"
+                    onclick="document.getElementById('documentViewer').src='{{ cand.resume.url }}';"
                     title="{% trans 'Resume' %}"
                 >
                     <span class="oh-file-icon oh-file-icon--pdf"></span> &nbsp {% trans "View" %}
                 </a>
             </div>
+
+            <div data-cell-index="4" class="oh-sticky-table__td">
+              <a
+                  style="text-decoration: none"
+                  class="oh-btn oh-btn--light"
+                  href="javascript:void(0);"
+                  onclick="document.getElementById('documentViewer').src='{{ cand.motivation.url }}';"
+                  title="Motivation"
+              >
+                  <span class="oh-file-icon oh-file-icon--pdf"></span> &nbsp {% trans "View" %}
+              </a>
+          </div>
+
             <div class="oh-sticky-table__td">
               {% if perms.recruitment.change_candidate %}
               <div class="oh-btn-group">
@@ -324,7 +340,7 @@
 
 </div>
 <div style="width: 50%;">
-  <iframe id="cvViewer" style="width: 100%; height: 100vh;" src=""></iframe>
+  <iframe id="documentViewer" style="width: 100%; height: 100vh;" src=""></iframe>
 </div>
 </div>
 

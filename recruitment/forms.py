@@ -51,6 +51,7 @@ from recruitment.models import (
     RejectedCandidate,
     RejectReason,
     Resume,
+    Motivation,
     Skill,
     SkillZone,
     SkillZoneCandidate,
@@ -356,6 +357,8 @@ class CandidateCreationForm(ModelForm):
         self.fields["profile"].required = False
         self.fields["resume"].widget.attrs["accept"] = ".pdf"
         self.fields["resume"].required = False
+        self.fields["motivation"].widget.attrs["accept"] = ".pdf"
+        self.fields["motivation"].required = False
         if self.instance.recruitment_id is not None:
             if self.instance is not None:
                 self.fields["job_position_id"] = forms.ModelChoiceField(
@@ -387,6 +390,7 @@ class CandidateCreationForm(ModelForm):
             "state",
             "zip",
             "resume",
+            "motivation",
             "referral",
             "canceled",
             "is_active",
@@ -508,6 +512,9 @@ class ApplicationForm(RegistrationForm):
         self.fields["profile"].required = False
         self.fields["resume"].widget.attrs["accept"] = ".pdf"
         self.fields["resume"].required = False
+        
+        self.fields["motivation"].widget.attrs["accept"] = ".pdf"
+        self.fields["motivation"].required = False
 
         self.fields["recruitment_id"].widget.attrs = {"data-widget": "ajax-widget"}
         self.fields["job_position_id"].widget.attrs = {"data-widget": "ajax-widget"}
@@ -582,6 +589,7 @@ class AddCandidateForm(ModelForm):
         fields = [
             "profile",
             "resume",
+            "motivation",
             "name",
             "email",
             "mobile",
@@ -914,6 +922,7 @@ exclude_fields = [
     "profile",
     "portfolio",
     "resume",
+    "motivation",
     "sequence",
     "schedule_date",
     "created_at",
@@ -1225,6 +1234,12 @@ class SkillsForm(ModelForm):
 class ResumeForm(ModelForm):
     class Meta:
         model = Resume
+        fields = ["file", "recruitment_id"]
+        widgets = {"recruitment_id": forms.HiddenInput()}
+
+class MotivationForm(ModelForm):
+    class Meta:
+        model = Motivation
         fields = ["file", "recruitment_id"]
         widgets = {"recruitment_id": forms.HiddenInput()}
 

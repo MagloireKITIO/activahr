@@ -208,6 +208,15 @@
           </li>
           <li class="oh-general__tab">
             <a
+              href="#"
+              class="oh-general__tab-link"
+              data-action="general-tab"
+              data-target="#motivation"
+              >Motivation</a
+            >
+          </li>
+          <li class="oh-general__tab">
+            <a
             href="#"
             class="oh-general__tab-link"
             data-action="general-tab"
@@ -597,6 +606,24 @@
           <p>{% trans "This candidate does not have a resume on file." %}</p>
           {% endif %}
         </div>
+          <!-- motivation -->
+        <div
+          class="oh-general__tab-target oh-profile__info-tab mb-4 d-none"
+          id="motivation"
+        >
+          {% if candidate.motivation %}
+          <iframe
+            id="iframe_pdf"
+            src="{{candidate.motivation.url}}"
+            style="width: 100%; height: 500px"
+            frameborder="0"
+          ></iframe>
+          
+          {% else %}
+          <p>{% trans "This candidate does not have a motivation on file." %}</p>
+          {% endif %}
+        </div>
+
         <div
           class="oh-general__tab-target oh-profile__info-tab mb-4"
           id="survey"
