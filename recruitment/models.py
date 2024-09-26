@@ -51,11 +51,16 @@ def validate_mobile(value):
 
 def validate_pdf(value):
     """
-    This method is used to validate pdf
+    This method is used to validate PDF files and limit the size to 10MB.
     """
     ext = os.path.splitext(value.name)[1]  # Get file extension
     if ext.lower() != ".pdf":
         raise ValidationError(_("File must be a PDF."))
+
+    # Taille maximale : 10MB
+    max_size = 10 * 1024 * 1024  # 10MB en octets
+    if value.size > max_size:
+        raise ValidationError(_("The file size must be less than 10MB."))
 
 
 def validate_image(value):
