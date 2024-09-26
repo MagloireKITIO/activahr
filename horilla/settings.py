@@ -219,10 +219,10 @@ X_FRAME_OPTIONS = "SAMEORIGIN"
 
 LANGUAGES = (
     ("en", "English (US)"),
-    ("de", "Deutsche"),
-    ("es", "Español"),
     ("fr", "France"),
-    ("ar", "عربى"),
+    # ("de", "Deutsche"),
+    # ("es", "Español"),
+    # ("ar", "عربى"),
 )
 
 LOCALE_PATHS = [
