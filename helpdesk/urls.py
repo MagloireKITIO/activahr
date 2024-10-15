@@ -41,7 +41,7 @@ urlpatterns = [
         name="faq-delete",
     ),
     path("ticket-view/", views.ticket_view, name="ticket-view"),
-    path("ticket-create/", views.ticket_create, name="ticket-create"),
+    path("ticket-create", views.ticket_create, name="ticket-create"),
     path("ticket-update/<int:ticket_id>", views.ticket_update, name="ticket-update"),
     path("ticket-archive/<int:ticket_id>", views.ticket_archive, name="ticket-archive"),
     path(
@@ -50,14 +50,14 @@ urlpatterns = [
         name="change-ticket-status",
     ),
     path("ticket-delete/<int:ticket_id>", views.ticket_delete, name="ticket-delete"),
-    path("ticket-filter/", views.ticket_filter, name="ticket-filter"),
+    path("ticket-filter", views.ticket_filter, name="ticket-filter"),
     path(
         "ticket-detail/<int:ticket_id>/",
         views.ticket_detail,
         name="ticket-detail",
         kwargs={"model": Ticket},
     ),
-    path("ticket-change-tag/", views.ticket_update_tag, name="ticket-change-tag"),
+    path("ticket-change-tag", views.ticket_update_tag, name="ticket-change-tag"),
     path(
         "ticket-change-raised-on/<int:ticket_id>",
         views.ticket_change_raised_on,
@@ -68,14 +68,14 @@ urlpatterns = [
         views.ticket_change_assignees,
         name="ticket-change-assignees",
     ),
-    path("ticket-create-tag/", views.create_tag, name="ticket-create-tag"),
-    path("remove-tag/", views.remove_tag, name="remove-tag"),
+    path("ticket-create-tag", views.create_tag, name="ticket-create-tag"),
+    path("remove-tag", views.remove_tag, name="remove-tag"),
     path("comment-create/<int:ticket_id>", views.comment_create, name="comment-create"),
     path("comment-edit/", views.comment_edit, name="comment-edit"),
     path(
         "comment-delete/<int:comment_id>/", views.comment_delete, name="comment-delete"
     ),
-    path("get-raised-on/", views.get_raised_on, name="get-raised-on"),
+    path("get-raised-on", views.get_raised_on, name="get-raised-on"),
     path("claim-ticket/<int:id>", views.claim_ticket, name="claim-ticket"),
     path(
         "tickets-select-filter",
