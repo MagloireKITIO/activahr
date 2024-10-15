@@ -27,7 +27,7 @@
 	<div hidden id="cur_raised_on" value="{{form.instance.raised_on}}">
 		{{form.instance.raised_on}}
 	</div>
-	<!-- <form
+	<form
 		{% if ticket_id %}
 			hx-post="{% url 'ticket-update' ticket_id %}"
 		{% else %}
@@ -37,7 +37,7 @@
 		hx-encoding="multipart/form-data"
 	>
 		{% csrf_token %} {{form.as_p}}
-	</form> -->
+	</form>
 </div>
 <!-- start of create tag modal. -->
 <div id="addTagModal">
