@@ -12,6 +12,7 @@ CSRF_TRUSTED_ORIGINS = ['https://' + os.environ['WEBSITE_HOSTNAME']]
 DEBUG = True
 
 # Configuration des applications installées
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -35,7 +36,9 @@ INSTALLED_APPS = [
     "payroll",
     "widget_tweaks",
     "django_apscheduler",
+    "auditlog",
 ]
+
 
 # Configuration des middlewares
 MIDDLEWARE = [
@@ -140,9 +143,6 @@ X_FRAME_OPTIONS = "SAMEORIGIN"
 LANGUAGES = (
     ("en", "English (US)"),
     ("fr", "France"),
-    # ("de", "Deutsche"),
-    # ("es", "Español"),
-    # ("ar", "عربى"),
 )
 
 # Configuration des chemins de localisation
@@ -151,16 +151,16 @@ LOCALE_PATHS = [
 ]
 
 # Configuration de sécurité pour la production
-if not DEBUG:
-    SECURE_BROWSER_XSS_FILTER = True
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = 31536000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
-    SECURE_CONTENT_TYPE_NOSNIFF = True
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# if not DEBUG:
+#     SECURE_BROWSER_XSS_FILTER = True
+#     SECURE_SSL_REDIRECT = True
+#     SECURE_HSTS_SECONDS = 31536000
+#     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+#     SECURE_HSTS_PRELOAD = True
+#     SECURE_CONTENT_TYPE_NOSNIFF = True
+#     SESSION_COOKIE_SECURE = True
+#     CSRF_COOKIE_SECURE = True
+#     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Configuration des tags de messages
 MESSAGE_TAGS = {
