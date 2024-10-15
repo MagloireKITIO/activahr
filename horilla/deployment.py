@@ -87,6 +87,52 @@ MESSAGE_TAGS = {
     messages.ERROR: "oh-alert--danger",
 }
 
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "notifications",
+    "mathfilters",
+    "corsheaders",
+    "simple_history",
+    "django_filters",
+    "base",
+    "employee",
+    "recruitment",
+    "leave",
+    "pms",
+    "onboarding",
+    "asset",
+    "attendance",
+    "payroll",
+    "widget_tweaks",
+    "django_apscheduler",
+]
+
 # Configuration de l'ordonnanceur APScheduler
 APSCHEDULER_DATETIME_FORMAT = "N j, Y, f:s a"
 APSCHEDULER_RUN_NOW_TIMEOUT = 25  # Seconds
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'WARNING',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': os.getenv('DJANGO_LOG_LEVEL', 'ERROR'),
+            'propagate': False,
+        },
+    },
+}
