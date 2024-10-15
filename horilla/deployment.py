@@ -36,7 +36,7 @@ INSTALLED_APPS = [
     "payroll",
     "widget_tweaks",
     "django_apscheduler",
-    "auditlog",
+    "horilla_audit",
 ]
 
 
@@ -111,8 +111,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Configuration des fichiers statiques
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_DIRS = [BASE_DIR / "static",]
+STATICFILES_DIRS = os.path.join(BASE_DIR, 'static')
 
 # Configuration des fichiers média
 MEDIA_URL = "/media/"
@@ -136,8 +137,7 @@ DJANGO_NOTIFICATIONS_CONFIG = {
     "TEMPLATE": "notifications.html",
 }
 
-# Configuration de la sécurité des frames
-X_FRAME_OPTIONS = "SAMEORIGIN"
+
 
 # Configuration des langues
 LANGUAGES = (
