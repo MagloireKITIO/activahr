@@ -11,35 +11,6 @@ ALLOWED_HOSTS = [os.environ['WEBSITE_HOSTNAME']]
 CSRF_TRUSTED_ORIGINS = ['https://' + os.environ['WEBSITE_HOSTNAME']]
 DEBUG = True
 
-# Configuration des applications installées
-
-INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.staticfiles",
-    "notifications",
-    "mathfilters",
-    "corsheaders",
-    "simple_history",
-    "django_filters",
-    "base",
-    "employee",
-    "recruitment",
-    "leave",
-    "pms",
-    "onboarding",
-    "asset",
-    "attendance",
-    "payroll",
-    "widget_tweaks",
-    "django_apscheduler",
-    "horilla_audit",
-]
-
-
 # Configuration des middlewares
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -93,40 +64,10 @@ DATABASES = {
     }
 }
 
-# Validation des mots de passe
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
-]
 
 # Configuration des fichiers statiques
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_DIRS = os.path.join(BASE_DIR, 'static')
-
-# Configuration des fichiers média
-MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media/")
-
-# Configuration par défaut du champ de clé primaire
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
-# Configuration de l'authentification
-LOGIN_URL = "/login"
-
-# Configuration de l'historique simple
-SIMPLE_HISTORY_REVERT_DISABLED = True
 
 # Configuration des notifications Django
 DJANGO_NOTIFICATIONS_CONFIG = {
@@ -138,31 +79,6 @@ DJANGO_NOTIFICATIONS_CONFIG = {
 }
 
 
-
-# Configuration des langues
-LANGUAGES = (
-    ("en", "English (US)"),
-    ("fr", "France"),
-)
-
-# Configuration des chemins de localisation
-LOCALE_PATHS = [
-    join(BASE_DIR, "horilla", "locale"),
-]
-
-# Configuration de sécurité pour la production
-# if not DEBUG:
-#     SECURE_BROWSER_XSS_FILTER = True
-#     SECURE_SSL_REDIRECT = True
-#     SECURE_HSTS_SECONDS = 31536000
-#     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-#     SECURE_HSTS_PRELOAD = True
-#     SECURE_CONTENT_TYPE_NOSNIFF = True
-#     SESSION_COOKIE_SECURE = True
-#     CSRF_COOKIE_SECURE = True
-#     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-
-# Configuration des tags de messages
 MESSAGE_TAGS = {
     messages.DEBUG: "oh-alert--warning",
     messages.INFO: "oh-alert--info",
