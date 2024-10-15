@@ -491,4 +491,4 @@ except:
     pass
 
 scheduler.add_job(recurring_holiday, "interval", hours=4)
-scheduler.start()
+# scheduler.start()
