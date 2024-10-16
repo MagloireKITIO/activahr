@@ -16123,27 +16123,32 @@ a.oh-profile-dropdown-link:hover {
 
 .oh-onboarding-preview {
     width: calc((100vw - 200px) / 2 - 40px);
-    max-width: 500px;
+    max-width: 600px;
     margin-left: 15px;
     background-color: hsl(0, 0%, 100%);
     -webkit-box-shadow: rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.06) 0px 1px 2px 0px;
     box-shadow: rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.06) 0px 1px 2px 0px;
-    padding: 2rem 1rem
+    padding: 2rem 1rem;
+    /* display: inline-block; */
 }
 
 .oh-onboarding-preview img {
-    width: 100%;
+    width: auto;
+    /* Permet à l'image de conserver sa largeur naturelle */
     height: auto;
-    -o-object-fit: contain;
-    object-fit: contain
+    /* Permet à l'image de conserver sa hauteur naturelle */
+    max-width: 100%;
+    /* Limite la largeur à 100% du conteneur pour éviter le débordement sur des écrans plus petits */
 }
 
-@media (max-width:991.98px) {
+@media (max-width: 991.98px) {
     .oh-onboarding-preview {
-        width: 90%;
-        max-width: 600px;
+        width: auto;
+        /* Laisse la largeur s'adapter au contenu */
+        max-width: 100%;
+        /* Limite à 90% de l'écran sur des écrans plus petits */
         margin-left: 0;
-        margin-top: 15px
+        margin-top: 15px;
     }
 }
 
