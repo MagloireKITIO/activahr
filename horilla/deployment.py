@@ -38,16 +38,15 @@ DATABASES = {
     }
 }
 
-if DEBUG:
-    SECURE_BROWSER_XSS_FILTER = True
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = 31536000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
-    SECURE_CONTENT_TYPE_NOSNIFF = True
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+CORS_ALLOW_ALL_ORIGINS = True  # Définissez sur True uniquement pour le débogage
+CORS_ALLOWED_ORIGINS = [
+    f"https://{os.environ['WEBSITE_HOSTNAME']}",
+]
+
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_HTTPONLY = True
 
 LOGGING = {
     'version': 1,
@@ -63,9 +62,9 @@ LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['console'],
-            'level': os.getenv('DJANGO_LOG_LEVEL', 'ERROR'),
-            'propagate': False,
-        },
+    'handlers': ['console'],
+    'level': 'DEBUG',  # Changé de 'ERROR' à 'DEBUG'
+    'propagate': False,
+      },
     },
 }
