@@ -193,8 +193,14 @@ USE_L10N = True
 
 USE_TZ = True
 
+EMAIL_USE_TLS = True 
+EMAIL_HOST = 'smtp.gmail.com' 
+EMAIL_PORT = '587'
+EMAIL_HOST_USER = 'magloirekitio1@gmail.com'
+EMAIL_HOST_PASSWORD = 'oaft ccuc ymob guiy'
+
 # Production settings
-if not DEBUG:
+if DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 31536000
