@@ -383,10 +383,9 @@ class Candidate(HorillaModel):
     # ajout motivation model
     motivation = models.FileField(
         upload_to="recruitment/motivation",
-        validators=[
-            validate_pdf,
-        ],
-        default="recruitment/motivation/default.pdf"  # Spécifiez le chemin vers un fichier PDF par défaut
+        validators=[validate_pdf],
+        blank=True,
+        null=True
     )
     referral = models.ForeignKey(
         Employee,

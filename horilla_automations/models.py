@@ -28,6 +28,7 @@ class MailAutomation(HorillaModel):
         ("on_create", "On Create"),
         ("on_update", "On Update"),
         ("on_delete", "On Delete"),
+        
     ]
     title = models.CharField(max_length=50, unique=True)
     method_title = models.CharField(max_length=50, editable=False)

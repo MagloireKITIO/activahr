@@ -1343,14 +1343,14 @@ def mail_server_test_email(request):
                     <table align="center" width="600" cellpadding="0" cellspacing="0" border="0" style="border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden;">
                         <tr>
                             <td align="center" bgcolor="#4CAF50" style="padding: 20px 0;">
-                                <h1 style="color: #ffffff; margin: 0;">Horilla</h1>
+                                <h1 style="color: #ffffff; margin: 0;">Activa Hr</h1>
                             </td>
                         </tr>
                         <tr>
                             <td style="padding: 20px;">
                                 <h3 style="color: #4CAF50;">Email tested successfully</h3>
                                 <b><p style="font-size: 14px;">Hi,<br>
-                                    This email is being sent as part of mail sever testing from Horilla.</p></b>
+                                    This email is being sent as part of mail sever testing from Activa hr.</p></b>
                                 <img src="cid:unique_image_id" alt="Test Image" style="width: 200px; height: auto; margin: 20px 0;">
                             </td>
                         </tr>
