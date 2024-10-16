@@ -3,6 +3,7 @@ import os
 from .settings import *
 from .settings import BASE_DIR
 
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Configuration de base
 SECRET_KEY = os.environ['SECRET']
@@ -26,6 +27,23 @@ MIDDLEWARE = [
     'horilla.custom_middleware.AuthCheckMiddleware',
 ]
 
+LOGIN_URL = "/login"
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
+    },
+    {
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
+    },
+]
+
 
 # Configuration de la base de données
 conn_str = os.environ['AZURE_POSTGRESQL_CONNECTIONSTRING']
@@ -39,6 +57,24 @@ DATABASES = {
         'PASSWORD': conn_str_params['password'],
     }
 }
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = "horilla.wsgi.application"
 
 LOGGING = {
     'version': 1,
