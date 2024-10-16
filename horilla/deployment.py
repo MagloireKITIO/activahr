@@ -12,18 +12,20 @@ DEBUG = True
 
 # Configuration des middlewares
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "corsheaders.middleware.CorsMiddleware",
-    "simple_history.middleware.HistoryRequestMiddleware",
-    "django.middleware.locale.LocaleMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "django.contrib.messages.middleware.MessageMiddleware",
-    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'simple_history.middleware.HistoryRequestMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'horilla.custom_middleware.AuthCheckMiddleware',
 ]
+
 
 # Configuration de la base de données
 conn_str = os.environ['AZURE_POSTGRESQL_CONNECTIONSTRING']
@@ -38,33 +40,29 @@ DATABASES = {
     }
 }
 
-
-CORS_ALLOW_ALL_ORIGINS = True  # Définissez sur True uniquement pour le débogage
-CORS_ALLOWED_ORIGINS = [
-    f"https://{os.environ['WEBSITE_HOSTNAME']}",
-]
-
-SESSION_ENGINE = 'django.contrib.sessions.backends.db'
-SESSION_COOKIE_SECURE = True
-SESSION_COOKIE_HTTPONLY = True
-
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
+    'formatters': {
+        'verbose': {
+            'format': '%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(message)s'
         },
     },
-    'root': {
-        'handlers': ['console'],
-        'level': 'WARNING',
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose'
+        },
     },
     'loggers': {
         'django': {
-    'handlers': ['console'],
-    'level': 'DEBUG',  # Changé de 'ERROR' à 'DEBUG'
-    'propagate': False,
-      },
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'horilla': {  # Remplacez par le nom de votre application
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
     },
 }
