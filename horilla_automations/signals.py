@@ -265,52 +265,42 @@ def send_automated_mail(
     from horilla_automations.methods.methods import evaluate_condition, operator_map
     from horilla_views.templatetags.generic_template_filters import getattribute
 
-    applicable = False
+    logger.debug(f"Received query_strings: {query_strings}")
+
+    applicable = True
     and_exists = False
     false_exists = False
     instance_values = []
     previous_instance_values = []
-    for condition in query_strings:
-        if condition.getlist("condition"):
-            attr = condition.getlist("condition")[0]
-            operator = condition.getlist("condition")[1]
-            value = condition.getlist("condition")[2]
 
-            if value == "on":
-                value = True
-            elif value == "off":
-                value = False
+    for condition in query_strings:
+        condition_list = condition.getlist("condition")
+        if len(condition_list) >= 2:  # Changed from 3 to 2
+            attr = condition_list[0]
+            operator = condition_list[1]
+            value = condition_list[2] if len(condition_list) > 2 else None  # Handle empty value
+
             instance_value = getattribute(instance, attr)
             previous_instance_value = getattribute(previous_instance, attr)
-            # The send mail method only trigger when actually any changes
-            # b/w the previous, current instance's `attr` field's values and
-            # if applicable for the automation
-            if getattr(instance_value, "pk", None) and isinstance(
-                instance_value, models.Model
-            ):
+
+            if getattr(instance_value, "pk", None) and isinstance(instance_value, models.Model):
                 instance_value = str(getattr(instance_value, "pk", None))
-                previous_instance_value = str(
-                    getattr(previous_instance_value, "pk", None)
-                )
+                previous_instance_value = str(getattr(previous_instance_value, "pk", None))
             elif isinstance(instance_value, QuerySet):
                 instance_value = list(instance_value.values_list("pk", flat=True))
-                previous_instance_value = list(
-                    previous_instance_value.values_list("pk", flat=True)
-                )
+                previous_instance_value = list(previous_instance_value.values_list("pk", flat=True))
 
             instance_values.append(instance_value)
-
             previous_instance_values.append(previous_instance_value)
 
-            if not condition.get("logic"):
+            condition_result = evaluate_condition(instance_value, operator, value)
 
-                applicable = evaluate_condition(instance_value, operator, value)
-            logic = condition.get("logic")
-            if logic:
-                applicable = operator_map[logic](
-                    applicable,
-                    evaluate_condition(instance_value, operator, value),
-                )
+            if not condition.get("logic"):
+                applicable = condition_result
+            else:
+                logic = condition.get("logic")
+                applicable = operator_map[logic](applicable, condition_result)
+
             if not applicable:
                 false_exists = True
             if logic == "and":
@@ -318,15 +308,16 @@ def send_automated_mail(
             if false_exists and and_exists:
                 applicable = False
                 break
+        else:
+            logger.warning(f"Skipping condition due to insufficient elements: {condition_list}")
+
     if applicable:
         if created and automation.trigger == "on_create":
             send_mail(request, automation, instance)
-        elif (automation.trigger == "on_update") and (
-            set(previous_instance_values) != set(instance_values)
-        ):
-
+        elif (automation.trigger == "on_update") and (set(previous_instance_values) != set(instance_values)):
             send_mail(request, automation, instance)
 
+    logger.info(f"Mail sending decision for {automation.title}: {'Sent' if applicable else 'Not sent'}")
 
 def send_mail(request, automation, instance):
     """

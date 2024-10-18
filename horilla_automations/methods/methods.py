@@ -127,7 +127,22 @@ def evaluate_condition(value1, operator_str, value2):
     op_func = operator_map.get(operator_str)
     if op_func is None:
         raise ValueError(f"Invalid operator: {operator_str}")
-    return op_func(value1, value2)
+    
+    # Handle the case where value2 is None (empty value in the form)
+    if value2 is None:
+        if operator_str in ["==", "!="]:
+            # For equality operators, we'll consider None as an empty string
+            value2 = ""
+        else:
+            # For other operators, we can't compare with None, so we'll return True
+            # This effectively ignores the condition if the value is empty
+            return True
+
+    try:
+        return op_func(value1, value2)
+    except TypeError:
+        # If we can't compare the values directly, convert them to strings
+        return op_func(str(value1), str(value2))
 
 
 def get_related_field_model(model: Employee, field_path):
