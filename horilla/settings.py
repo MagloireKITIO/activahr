@@ -128,6 +128,11 @@ AUTH_PASSWORD_VALIDATORS = [
 STATIC_URL = "static/"
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
+# Increase the data upload limit to 10 MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
+
+# Increase the file upload limit to 10 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10 MB
 
 STATICFILES_DIRS = [
     BASE_DIR / "static",
