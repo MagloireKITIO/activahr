@@ -625,31 +625,34 @@
           },
         });
   }
-  function updateCandStage(canIds,stageId,preStageId){
-      $.ajax({
-        type: "POST",
-        url: "/recruitment/candidate-stage-change?bulk=false",
-        data: {
-          csrfmiddlewaretoken: getCookie("csrftoken"),
-          canIds: canIds,
-          stageId:stageId,
-        },
-        success: function (response, textStatus, jqXHR) {
-          if (jqXHR.status === 200) {
-            $(`#stageLoad`+preStageId).click();
-            $(`#stageLoad`+stageId).click();
-          }
-          if (response.message) {
-            Swal.fire({
-              title: response.message,
-              text: `Total vacancy is ${response.vacancy}.`, // Using template literals
-              icon: 'info',
-              confirmButtonText: 'Ok',
-            });
-          }
-        },
-      });
-  }
+  function updateCandStage(canIds, stageId, preStageId) {
+  console.log("Mise à jour du stage : ", canIds, stageId, preStageId);
+  $.ajax({
+    type: "POST",
+    url: "/recruitment/candidate-stage-change?bulk=false",
+    data: {
+      csrfmiddlewaretoken: getCookie("csrftoken"),
+      canIds: canIds,
+      stageId: stageId,
+    },
+    success: function (response, textStatus, jqXHR) {
+      console.log("Succès AJAX : ", response);
+      if (jqXHR.status === 200) {
+        $(`#stageLoad` + preStageId).click();  // Vérifie que ces éléments existent
+        $(`#stageLoad` + stageId).click();
+        window.location.reload();
+      }
+      if (response.message) {
+        Swal.fire({
+          title: response.message,
+          text: `Total vacancy is ${response.vacancy}.`, // Using template literals
+          icon: 'info',
+          confirmButtonText: 'Ok',
+        });
+      }
+    },
+  });
+}
   function checkSequence(element) {
     var preStageId = $(element).data("stage_id")
     var canIds = $(element).data("cand_id")

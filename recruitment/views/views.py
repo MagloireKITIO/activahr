@@ -582,6 +582,7 @@ def candidate_component(request):
         .filter(id=stage_id)
         .first()
     )
+    
     candidates = CACHE.get(request.session.session_key + "pipeline")[
         "candidates"
     ]
