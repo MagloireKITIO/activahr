@@ -54,6 +54,10 @@ urlpatterns = [
         recruitment.views.actions.recruitment_delete,
         name="recruitment-delete",
     ),
+    # Shortlisting
+    path('shortlist-candidates/<int:stage_id>/', 
+        views.shortlist_candidates, 
+        name='shortlist-candidates'),
     path(
         "recruitment-close-pipeline/<int:rec_id>/",
         views.recruitment_close_pipeline,

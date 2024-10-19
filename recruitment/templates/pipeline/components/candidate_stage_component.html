@@ -43,9 +43,12 @@
                     <span> {% trans "Candidate" %} </span>
                 </div>
 
-                <!-- <div class="oh-sticky-table__th oh-table-config__th" style="width: 135">
-                    <span> {% trans "Email" %}</span>
-                </div> -->
+                <div class="oh-sticky-table__th oh-table-config__th {% if request.GET.orderby == '-score' %}arrow-up{% elif request.GET.orderby == 'score' %}arrow-down{% else %}arrow-up-down{% endif %}" 
+                    style="width: 100px;" 
+                    hx-get="{% url 'candidate-stage-component' %}?orderby={% if request.GET.orderby == 'score' %}-{% endif %}score&stage_id={{stage.id}}"
+                    hx-target="#pipelineStageContainer{{stage.id}}">
+                    {% trans "Score" %}
+                </div>
 
                 <!-- <div class="oh-sticky-table__th oh-table-config__th" style="width: 135px;">
                     <span> {% trans "Job Position" %} </span>
@@ -103,6 +106,7 @@
         <div hx-trigger="end" data-drag-htmx="true" hx-target="#pipelineStageContainer{{stage.id}}" hx-swap="none" hx-get="" class="hx-sortable oh-sticky-table__tbody oh-table--inter-sortable ui-sortable candidate-container"
             data-container="candidate" data-container-list="candidate" data-stage-id="{{stage.id}}"
             data-recruitment-id="{{rec.id}}" id="candidateContainer{{stage.id}}">
+            
             {% for cand in candidates %}
             <div onclick="window.location.href = '{% url 'candidate-view-individual' cand.id %}'"
                 class="oh-sticky-table__tr oh-table-config__tr candidate ui-droppable ui-sortable-handle cand change-cand "
@@ -114,6 +118,8 @@
                 data-pre_stage_id ="{{cand.stage_id.id}}"
                 data-stage_order = '{{cand.recruitment_id.ordered_stages|to_json|safe}}'
                 data-job-position="{{cand.job_position_id}}">
+                
+
                 <div class="oh-sticky-table__sd" style="z-index: 11 !important;" onclick="event.stopPropagation()">
                     <div class="centered-div">
                         <input type="checkbox" id="{{cand.id}}"
@@ -126,6 +132,7 @@
                     </div>
                     <input type="text" name="order" value="{{cand.id}}" hidden>
                 </div>
+               
                 <div class="oh-sticky-table__td oh-table-config__td"
                     style="text-decoration: none;width: 400px !important;">
                     {% for interview_schedule in cand.candidate_interview.all %}
@@ -145,6 +152,7 @@
                     {% endfor %}
 
                     <span title={% trans "Move" %}><ion-icon name="move"></ion-icon></span>
+
                     <div class="oh-profile oh-profile--md">
                         <div class="oh-profile__avatar mr-1">
                             <img src="{{cand.get_avatar}}" class="oh-profile__image" alt="User" />
@@ -176,6 +184,14 @@
                 <!-- <div class="oh-sticky-table__td oh-table-config__td">
                     {{cand.mobile}}
                 </div> -->
+                 <!-- shortlisting -->
+                <div class="oh-sticky-table__td oh-table-config__td">
+                    {% if cand.score %}
+                        {{ cand.score|floatformat:2 }}
+                    {% else %}
+                        {% trans "Non évalué" %}
+                    {% endif %}
+                </div>
 
                 <div class="oh-sticky-table__td oh-table-config__td">
                     {% trans "Interviews Scheduled" %} : {{cand.candidate_interview.count}}
