@@ -30,6 +30,7 @@ from typing import Any
 from django import forms
 from django.apps import apps
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
+from django.db import IntegrityError
 from django.template.loader import render_to_string
 from django.utils.translation import gettext_lazy as _
 
@@ -407,7 +408,7 @@ class CandidateCreationForm(ModelForm):
             "address": _("Address"),
             "zip": _("Zip"),
         }
-
+        
     def save(self, commit: bool = ...):
         candidate = self.instance
         recruitment = candidate.recruitment_id
@@ -424,7 +425,20 @@ class CandidateCreationForm(ModelForm):
         if job_id:
             job_position = JobPosition.objects.get(id=job_id)
             self.instance.job_position_id = job_position
-        return super().save(commit)
+        
+        if commit:
+            try:
+                # Tentative de sauvegarde du candidat
+                super().save(commit=True)
+            except IntegrityError:
+                # Si une IntegrityError est levée, cela signifie probablement que
+                # le candidat a déjà postulé pour cette offre
+                raise ValidationError(_("Vous avez déjà postulé pour cette offre d'emploi."))
+        else:
+            # Si commit est False, on ne fait pas la sauvegarde tout de suite
+            return super().save(commit=False)
+        
+        return candidate
 
     def as_p(self, *args, **kwargs):
         """
@@ -436,30 +450,51 @@ class CandidateCreationForm(ModelForm):
         )
         return table_html
 
+         
+
     def clean(self):
+        cleaned_data = super().clean()
         errors = {}
-        profile = self.cleaned_data["profile"]
-        resume = self.cleaned_data["resume"]
-        recruitment: Recruitment = self.cleaned_data["recruitment_id"]
+        
+        profile = cleaned_data.get("profile")
+        resume = cleaned_data.get("resume")
+        recruitment = cleaned_data.get("recruitment_id")
+        email = cleaned_data.get("email")
+        
+        # Vérification du CV et de la photo de profil
         if not resume and not recruitment.optional_resume:
-            errors["resume"] = _("This field is required")
+            errors["resume"] = _("Ce champ est obligatoire")
         if not profile and not recruitment.optional_profile_image:
-            errors["profile"] = _("This field is required")
+            errors["profile"] = _("Ce champ est obligatoire")
+        
+        # Vérification du poste
         if self.instance.name is not None:
             self.errors.pop("job_position_id", None)
             if (
                 self.instance.job_position_id is None
                 or self.data.get("job_position_id") == ""
             ):
-                errors["job_position_id"] = _("This field is required")
+                errors["job_position_id"] = _("Ce champ est obligatoire")
             if (
                 self.instance.job_position_id
                 not in self.instance.recruitment_id.open_positions.all()
             ):
-                errors["job_position_id"] = _("Choose valid choice")
+                errors["job_position_id"] = _("Choisissez une option valide")
+        
+        # Nouvelle vérification pour les candidatures multiples
+        if email and recruitment:
+            existing_candidate = Candidate.objects.filter(
+                email=email, 
+                recruitment_id=recruitment
+            ).exclude(pk=self.instance.pk).exists()
+            
+            if existing_candidate:
+                errors["email"] = _("Vous avez déjà postulé pour cette offre d'emploi.")
+        
         if errors:
             raise ValidationError(errors)
-        return super().clean()
+        
+        return cleaned_data
 
 
 class ApplicationForm(RegistrationForm):
@@ -522,26 +557,50 @@ class ApplicationForm(RegistrationForm):
             self.fields["profile"].required = False
 
     def clean(self, *args, **kwargs):
-        name = self.cleaned_data["name"]
+        cleaned_data = super().clean(*args, **kwargs)
+        name = cleaned_data.get("name")
         request = getattr(_thread_locals, "request", None)
 
         errors = {}
-        profile = self.cleaned_data["profile"]
-        resume = self.cleaned_data["resume"]
-        recruitment: Recruitment = self.cleaned_data["recruitment_id"]
+        profile = cleaned_data.get("profile")
+        resume = cleaned_data.get("resume")
+        recruitment: Recruitment = cleaned_data.get("recruitment_id")
+        email = cleaned_data.get("email")
+
+        # Vérification du CV et de la photo de profil
         if not resume and not recruitment.optional_resume:
-            errors["resume"] = _("This field is required")
+            errors["resume"] = _("Ce champ est obligatoire")
         if not profile and not recruitment.optional_profile_image:
-            errors["profile"] = _("This field is required")
+            errors["profile"] = _("Ce champ est obligatoire")
+
+        # Nouvelle vérification pour les candidatures multiples
+        if email and recruitment:
+            existing_candidate = Candidate.objects.filter(
+                email=email, 
+                recruitment_id=recruitment
+            ).exists()
+            
+            if existing_candidate:
+                errors["email"] = _("Vous avez déjà postulé pour cette offre d'emploi.")
+
         if errors:
             raise ValidationError(errors)
+
+        # Gestion de la photo de profil par défaut
         if (
             not profile
             and request
             and request.user.has_perm("recruitment.add_candidate")
         ):
             profile_pic_url = f"https://ui-avatars.com/api/?name={name}"
-            self.cleaned_data["profile"] = profile_pic_url
+            cleaned_data["profile"] = profile_pic_url
+
+        return cleaned_data
+
+            
+
+
+
         super().clean()
         return self.cleaned_data
 

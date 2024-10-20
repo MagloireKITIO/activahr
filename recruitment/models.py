@@ -119,7 +119,7 @@ class Recruitment(HorillaModel):
         default=False,
         help_text=_("To start recruitment for multiple job positions"),
     )
-    closed = models.BooleanField(
+    closed = models.BooleanField(  
         default=False,
         help_text=_(
             "To close the recruitment, If closed then not visible on pipeline view."
@@ -365,7 +365,9 @@ class Candidate(HorillaModel):
     schedule_date = models.DateTimeField(
         blank=True, null=True, verbose_name=_("Schedule date")
     )
-    email = models.EmailField(max_length=254, unique=True, verbose_name=_("Email"))
+    email = models.EmailField(max_length=254, verbose_name=_("Email"))
+    
+    
     mobile = models.CharField(
         max_length=15,
         blank=True,
@@ -401,6 +403,7 @@ class Candidate(HorillaModel):
     address = models.TextField(
         null=True, blank=True, verbose_name=_("Address"), max_length=255
     )
+    
     country = models.CharField(
         max_length=30, null=True, blank=True, verbose_name=_("Country")
     )
@@ -598,15 +601,23 @@ class Candidate(HorillaModel):
         Meta class to add the additional info
         """
 
-        unique_together = (
-            "email",
-            "recruitment_id",
-        )
+        unique_together = ('email', 'recruitment_id')
         permissions = (
             ("view_history", "View Candidate History"),
             ("archive_candidate", "Archive Candidate"),
         )
         ordering = ["sequence"]
+
+    def clean(self):
+        super().clean()
+        # Vérifier si le candidat a déjà postulé pour ce recrutement spécifique
+        if Candidate.objects.filter(email=self.email, recruitment_id=self.recruitment_id).exclude(pk=self.pk).exists():
+            raise ValidationError(_("Vous avez déjà postulé pour cette offre d'emploi."))
+
+    def save(self, *args, **kwargs):
+        self.clean()  # Appeler la méthode clean avant la sauvegarde
+        # ... le reste de la logique de sauvegarde ...
+        super().save(*args, **kwargs)
 
 
 from horilla.signals import pre_bulk_update
