@@ -21,7 +21,7 @@ import re
 from datetime import datetime
 from itertools import chain
 from urllib.parse import parse_qs
-
+from django.template.loader import render_to_string
 import fitz
 from django import template
 from django.conf import settings
@@ -626,27 +626,29 @@ def candidate_component(request):
 @login_required
 @manager_can_enter("recruitment.change_candidate")
 def change_candidate_stage(request):
-    """
-    This method is used to update candidates stage
-    """
     if request.method == "POST":
         canIds = request.POST["canIds"]
         stage_id = request.POST["stageId"]
         context = {}
+        stages_to_update = set()
+
         if request.GET.get("bulk") == "True":
             canIds = json.loads(canIds)
             for cand_id in canIds:
                 try:
                     candidate = Candidate.objects.get(id=cand_id)
+                    old_stage = candidate.stage_id
+                    stages_to_update.add(old_stage.id)
                     stage = Stage.objects.filter(
                         recruitment_id=candidate.recruitment_id, id=stage_id
                     ).first()
                     if stage:
                         candidate.stage_id = stage
                         candidate.save()
+                        stages_to_update.add(stage.id)
                         if stage.stage_type == "hired":
                             if stage.recruitment_id.is_vacancy_filled():
-                                context["message"] = _("Vaccancy is filled")
+                                context["message"] = _("Vacancy is filled")
                                 context["vacancy"] = stage.recruitment_id.vacancy
                         messages.success(request, "Candidate stage updated")
                 except Candidate.DoesNotExist:
@@ -654,34 +656,44 @@ def change_candidate_stage(request):
         else:
             try:
                 candidate = Candidate.objects.get(id=canIds)
+                old_stage = candidate.stage_id
+                stages_to_update.add(old_stage.id)
                 stage = Stage.objects.filter(
                     recruitment_id=candidate.recruitment_id, id=stage_id
                 ).first()
                 if stage:
                     candidate.stage_id = stage
                     candidate.save()
+                    stages_to_update.add(stage.id)
                     if stage.stage_type == "hired":
                         if stage.recruitment_id.is_vacancy_filled():
-                            context["message"] = _("Vaccancy is filled")
+                            context["message"] = _("Vacancy is filled")
                             context["vacancy"] = stage.recruitment_id.vacancy
-                    candidate.stage_id = stage
-                    candidate.save()
                     messages.success(request, "Candidate stage updated")
             except Candidate.DoesNotExist:
                 messages.error(request, _("Candidate not found."))
-        return JsonResponse(context)
-    candidate_id = request.GET["candidate_id"]
-    stage_id = request.GET["stage_id"]
-    candidate = Candidate.objects.get(id=candidate_id)
-    stage = Stage.objects.filter(
-        recruitment_id=candidate.recruitment_id, id=stage_id
-    ).first()
-    if stage:
-        candidate.stage_id = stage
-        candidate.save()
-        messages.success(request, "Candidate stage updated")
-    return stage_component(request)
 
+        stages_html = {}
+        stage_counts = {}
+        for s_id in stages_to_update:
+            stage = Stage.objects.get(id=s_id)
+            candidates = Candidate.objects.filter(stage_id=s_id)
+            stages_html[s_id] = render_to_string(
+                "pipeline/components/candidate_stage_component.html",
+                {
+                    "candidates": limited_paginator_qry(candidates, request.GET.get("candidate_page")),
+                    "stage": stage,
+                    "rec": stage.recruitment_id,
+                    "now": timezone.now(),
+                },
+                request
+            )
+            stage_counts[s_id] = candidates.count()
+
+        context["stages_html"] = stages_html
+        context["stage_counts"] = stage_counts
+        return JsonResponse(context)
+    return JsonResponse({"error": "Invalid request method"}, status=400)
 
 @login_required
 @permission_required(perm="recruitment.view_recruitment")
@@ -871,6 +883,9 @@ def candidate_stage_update(request, cand_id):
         candidate_obj.schedule_date = schedule_date
         candidate_obj.start_onboard = False
         candidate_obj.save()
+
+        
+
         with contextlib.suppress(Exception):
             managers = stage_obj.stage_managers.select_related("employee_user_id")
             users = [employee.employee_user_id for employee in managers]
