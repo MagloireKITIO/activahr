@@ -380,6 +380,9 @@ class Candidate(HorillaModel):
             validate_pdf,
         ],
     )
+    #shortlisting
+    score = models.FloatField(null=True, blank=True, verbose_name=_("Score"))
+
     # ajout motivation model
     motivation = models.FileField(
         upload_to="recruitment/motivation",

@@ -600,56 +600,81 @@
       }
       return cookieValue;
     }
-  function bulkStageUpdate(canIds,stageId,preStageId){
-        $.ajax({
-          type: "POST",
-          url: "/recruitment/candidate-stage-change?bulk=True",
-          data: {
+    function bulkStageUpdate(canIds, stageId, preStageId) {
+    $.ajax({
+        type: "POST",
+        url: "/recruitment/candidate-stage-change?bulk=True",
+        data: {
             csrfmiddlewaretoken: getCookie("csrftoken"),
             canIds: JSON.stringify(canIds),
-            stageId:stageId,
-          },
-          success: function (response, textStatus, jqXHR) {
+            stageId: stageId,
+        },
+        success: function (response, textStatus, jqXHR) {
             if (jqXHR.status === 200) {
-              $(`#stageLoad`+preStageId).click();
-              $(`#stageLoad`+stageId).click();
+                updateStageContainers(response, preStageId, stageId);
             }
             if (response.message) {
-              Swal.fire({
-                title: response.message,
-                text: `Total vacancy is ${response.vacancy}.`, // Using template literals
-                icon: 'info',
-                confirmButtonText: 'Ok',
-              });
+                Swal.fire({
+                    title: response.message,
+                    text: `Total vacancy is ${response.vacancy}.`,
+                    icon: 'info',
+                    confirmButtonText: 'Ok',
+                });
             }
-          },
-        });
-  }
-  function updateCandStage(canIds,stageId,preStageId){
-      $.ajax({
+        },
+    });
+}
+
+function updateCandStage(canIds, stageId, preStageId) {
+    console.log("Mise à jour du stage : ", canIds, stageId, preStageId);
+    $.ajax({
         type: "POST",
         url: "/recruitment/candidate-stage-change?bulk=false",
         data: {
-          csrfmiddlewaretoken: getCookie("csrftoken"),
-          canIds: canIds,
-          stageId:stageId,
+            csrfmiddlewaretoken: getCookie("csrftoken"),
+            canIds: canIds,
+            stageId: stageId,
         },
         success: function (response, textStatus, jqXHR) {
-          if (jqXHR.status === 200) {
-            $(`#stageLoad`+preStageId).click();
-            $(`#stageLoad`+stageId).click();
-          }
-          if (response.message) {
-            Swal.fire({
-              title: response.message,
-              text: `Total vacancy is ${response.vacancy}.`, // Using template literals
-              icon: 'info',
-              confirmButtonText: 'Ok',
-            });
-          }
+            console.log("Succès AJAX : ", response);
+            if (jqXHR.status === 200) {
+                updateStageContainers(response, preStageId, stageId);
+            }
+            if (response.message) {
+                Swal.fire({
+                    title: response.message,
+                    text: `Total vacancy is ${response.vacancy}.`,
+                    icon: 'info',
+                    confirmButtonText: 'Ok',
+                });
+            }
         },
-      });
-  }
+    });
+}
+
+function updateStageContainers(response, preStageId, stageId) {
+    if (response.stages_html) {
+        if (response.stages_html[preStageId]) {
+            $(`#pipelineStageContainer${preStageId}`).html(response.stages_html[preStageId]);
+        }
+        if (response.stages_html[stageId]) {
+            $(`#pipelineStageContainer${stageId}`).html(response.stages_html[stageId]);
+        }
+    }
+    
+    if (response.stage_counts) {
+        if (response.stage_counts[preStageId]) {
+            $(`#stageCount${preStageId}`).text(response.stage_counts[preStageId]);
+        }
+        if (response.stage_counts[stageId]) {
+            $(`#stageCount${stageId}`).text(response.stage_counts[stageId]);
+        }
+    }
+
+    // Recharger les conteneurs de stage mis à jour
+    $(`#stageLoad${preStageId}`).click();
+    $(`#stageLoad${stageId}`).click();
+}
   function checkSequence(element) {
     var preStageId = $(element).data("stage_id")
     var canIds = $(element).data("cand_id")

@@ -70,6 +70,14 @@
                             </form>
                         </li>
                         {% endif %}
+                        <!-- ajout shortlisting -->
+                        {% if perms.recruitment.change_candidate or request.user|is_stagemanager %}
+                            <a href="{% url 'shortlist-candidates' stage.id %}" class="oh-btn oh-btn--secondary oh-btn--small" 
+                            onclick="return confirm('{% trans "Êtes-vous sûr de vouloir évaluer et classer les candidats de cette étape ?" %}')">
+                         {% trans "Shortlist" %}
+                        </a>
+                        {% endif %}
+
                     </ul>
                 </div>
             </div>

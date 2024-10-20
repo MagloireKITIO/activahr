@@ -21,7 +21,7 @@ import re
 from datetime import datetime
 from itertools import chain
 from urllib.parse import parse_qs
-
+from django.template.loader import render_to_string
 import fitz
 from django import template
 from django.conf import settings
@@ -38,6 +38,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
+from requests import request
 
 from base.backends import ConfiguredEmailBackend
 from base.context_processors import check_candidate_self_tracking
@@ -581,9 +582,21 @@ def candidate_component(request):
         .filter(id=stage_id)
         .first()
     )
+    
     candidates = CACHE.get(request.session.session_key + "pipeline")[
         "candidates"
-    ].filter(stage_id=stage)
+    ]
+    candidates = [cand for cand in candidates if cand.stage_id == stage]
+
+    # Ajout du tri par score
+    order_by = request.GET.get('orderby', '-score')
+    reverse_order = order_by.startswith('-')
+    order_by = order_by.lstrip('-')
+
+    if order_by == 'score':
+        candidates = sorted(candidates, key=lambda x: x.score or 0, reverse=reverse_order)
+    else:
+        candidates = sorted(candidates, key=lambda x: getattr(x, order_by, 0), reverse=reverse_order)
 
     template = "pipeline/components/candidate_stage_component.html"
     if (
@@ -593,6 +606,10 @@ def candidate_component(request):
         template = "pipeline/kanban_components/candidate_kanban_components.html"
 
     now = timezone.now()
+    
+    # Utilisez le premier candidat de la liste s'il existe, sinon un dictionnaire vide
+    first_candidate = candidates[0] if candidates else {}
+    
     return render(
         request,
         template,
@@ -601,36 +618,37 @@ def candidate_component(request):
                 candidates, request.GET.get("candidate_page")
             ),
             "stage": stage,
-            "rec": getattr(candidates.first(), "recruitment_id", {}),
+            "rec": getattr(first_candidate, "recruitment_id", {}),
             "now": now,
         },
     )
 
-
 @login_required
 @manager_can_enter("recruitment.change_candidate")
 def change_candidate_stage(request):
-    """
-    This method is used to update candidates stage
-    """
     if request.method == "POST":
         canIds = request.POST["canIds"]
         stage_id = request.POST["stageId"]
         context = {}
+        stages_to_update = set()
+
         if request.GET.get("bulk") == "True":
             canIds = json.loads(canIds)
             for cand_id in canIds:
                 try:
                     candidate = Candidate.objects.get(id=cand_id)
+                    old_stage = candidate.stage_id
+                    stages_to_update.add(old_stage.id)
                     stage = Stage.objects.filter(
                         recruitment_id=candidate.recruitment_id, id=stage_id
                     ).first()
                     if stage:
                         candidate.stage_id = stage
                         candidate.save()
+                        stages_to_update.add(stage.id)
                         if stage.stage_type == "hired":
                             if stage.recruitment_id.is_vacancy_filled():
-                                context["message"] = _("Vaccancy is filled")
+                                context["message"] = _("Vacancy is filled")
                                 context["vacancy"] = stage.recruitment_id.vacancy
                         messages.success(request, "Candidate stage updated")
                 except Candidate.DoesNotExist:
@@ -638,34 +656,44 @@ def change_candidate_stage(request):
         else:
             try:
                 candidate = Candidate.objects.get(id=canIds)
+                old_stage = candidate.stage_id
+                stages_to_update.add(old_stage.id)
                 stage = Stage.objects.filter(
                     recruitment_id=candidate.recruitment_id, id=stage_id
                 ).first()
                 if stage:
                     candidate.stage_id = stage
                     candidate.save()
+                    stages_to_update.add(stage.id)
                     if stage.stage_type == "hired":
                         if stage.recruitment_id.is_vacancy_filled():
-                            context["message"] = _("Vaccancy is filled")
+                            context["message"] = _("Vacancy is filled")
                             context["vacancy"] = stage.recruitment_id.vacancy
-                    candidate.stage_id = stage
-                    candidate.save()
                     messages.success(request, "Candidate stage updated")
             except Candidate.DoesNotExist:
                 messages.error(request, _("Candidate not found."))
-        return JsonResponse(context)
-    candidate_id = request.GET["candidate_id"]
-    stage_id = request.GET["stage_id"]
-    candidate = Candidate.objects.get(id=candidate_id)
-    stage = Stage.objects.filter(
-        recruitment_id=candidate.recruitment_id, id=stage_id
-    ).first()
-    if stage:
-        candidate.stage_id = stage
-        candidate.save()
-        messages.success(request, "Candidate stage updated")
-    return stage_component(request)
 
+        stages_html = {}
+        stage_counts = {}
+        for s_id in stages_to_update:
+            stage = Stage.objects.get(id=s_id)
+            candidates = Candidate.objects.filter(stage_id=s_id)
+            stages_html[s_id] = render_to_string(
+                "pipeline/components/candidate_stage_component.html",
+                {
+                    "candidates": limited_paginator_qry(candidates, request.GET.get("candidate_page")),
+                    "stage": stage,
+                    "rec": stage.recruitment_id,
+                    "now": timezone.now(),
+                },
+                request
+            )
+            stage_counts[s_id] = candidates.count()
+
+        context["stages_html"] = stages_html
+        context["stage_counts"] = stage_counts
+        return JsonResponse(context)
+    return JsonResponse({"error": "Invalid request method"}, status=400)
 
 @login_required
 @permission_required(perm="recruitment.view_recruitment")
@@ -855,6 +883,9 @@ def candidate_stage_update(request, cand_id):
         candidate_obj.schedule_date = schedule_date
         candidate_obj.start_onboard = False
         candidate_obj.save()
+
+        
+
         with contextlib.suppress(Exception):
             managers = stage_obj.stage_managers.select_related("employee_user_id")
             users = [employee.employee_user_id for employee in managers]
@@ -2967,29 +2998,56 @@ def delete_resume_file(request):
     return redirect(f"{url}{query_params}")
 
 
+@login_required
+@manager_can_enter("recruitment.change_candidate")
+def shortlist_candidates(request, stage_id):
+    stage = get_object_or_404(Stage, id=stage_id)
+    candidates = Candidate.objects.filter(stage_id=stage)
+    
+    recruitment = stage.recruitment_id
+    skills = list(recruitment.skills.values_list('title', flat=True))
+
+    for candidate in candidates:
+        if candidate.score is None:  # N'évaluez que les candidats qui n'ont pas encore de score
+            score = 0
+            if candidate.resume:
+                try:
+                    words = extract_words_from_pdf(candidate.resume)
+                    matching_skills_count = sum(skill.lower() in words for skill in skills)
+                    score = (matching_skills_count / len(skills)) * 100 if skills else 0  # Score en pourcentage
+                except Exception as e:
+                    messages.error(request, _(f"Erreur lors de l'évaluation du CV de {candidate.name}: {str(e)}"))
+
+            candidate.score = score
+            candidate.save()
+
+    messages.success(request, _("Les candidats ont été évalués et classés avec succès."))
+    return redirect('pipeline')
+
+    # cache_key = request.session.session_key + "pipeline"
+    # CACHE.delete(cache_key)
+
 def extract_words_from_pdf(pdf_file):
     """
     This method is used to extract the words from the pdf file into a list.
     Args:
         pdf_file: pdf file
-
     """
     pdf_document = fitz.open(pdf_file.path)
-
+    
     words = []
-
+    
     for page_num in range(len(pdf_document)):
         page = pdf_document.load_page(page_num)
         page_text = page.get_text()
-
+        
         page_words = re.findall(r"\b\w+\b", page_text.lower())
-
+        
         words.extend(page_words)
-
+    
     pdf_document.close()
-
+    
     return words
-
 
 @login_required
 @hx_request_required
