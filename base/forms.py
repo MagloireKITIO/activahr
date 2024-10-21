@@ -2167,6 +2167,9 @@ class MailTemplateForm(ModelForm):
             "Candidate|Job position": "instance.get_job_position",
             "Candidate|Email": "instance.get_email",
             "Candidate|Interview Table": "instance.get_interview|safe",
+            "Candidate|Gender": "instance.get_gender",
+            "Candidate|Title": "instance.get_title",
+
         }
         return mail_data
 

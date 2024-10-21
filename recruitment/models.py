@@ -455,6 +455,27 @@ class Candidate(HorillaModel):
     objects = HorillaCompanyManager(related_company_field="recruitment_id__company_id")
     last_updated = models.DateField(null=True, auto_now=True)
 
+
+    def get_gender(self):
+
+        """
+        Return formatted gender
+        """
+        # Les choix sont définis comme : 
+        # choices = [("male", _("Male")), ("female", _("Female")), ("other", _("Other"))]
+        return dict(self.choices).get(self.gender, '')
+    
+    def get_title(self):
+        """
+        Return appropriate title based on gender
+        """
+        titles = {
+            'male': _('Mr.'),
+            'female': _('Ms.'),
+            'other': _('Mx.')
+    }
+        return titles.get(self.gender, '')
+
     def __str__(self):
         return f"{self.name}"
 
@@ -618,6 +639,8 @@ class Candidate(HorillaModel):
         self.clean()  # Appeler la méthode clean avant la sauvegarde
         # ... le reste de la logique de sauvegarde ...
         super().save(*args, **kwargs)
+
+        
 
 
 from horilla.signals import pre_bulk_update
