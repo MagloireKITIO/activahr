@@ -8,14 +8,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ArjunCybro/OpenHRMS-Dashboard.git"
+    "url": "git+https://github.com/ArjunCybro/ActivaHR-Dashboard.git"
   },
-  "author": "OpenHRMS",
+  "author": "ActivaHR",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/ArjunCybro/OpenHRMS-Dashboard/issues"
+    "url": "https://github.com/ArjunCybro/ActivaHR-Dashboard/issues"
   },
-  "homepage": "https://github.com/ArjunCybro/OpenHRMS-Dashboard#readme",
+  "homepage": "https://github.com/ArjunCybro/ActivaHR-Dashboard#readme",
   "devDependencies": {
     "laravel-mix": "^6.0.49"
   },
